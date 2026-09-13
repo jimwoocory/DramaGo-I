@@ -1,0 +1,284 @@
+import { createSectionBlockId, sectionIdBeforeHeadingLine } from "@/domains/documents/lib/sections";
+
+export interface StoryboardShotSummary {
+	cameraMove?: string;
+	durationLabel?: string;
+	durationSeconds?: number;
+	startSeconds?: number;
+	endSeconds?: number;
+	perspective?: string;
+	prompt: string;
+	shotSize?: string;
+	text: string;
+	title: string;
+}
+
+export interface StoryboardLaneSource {
+	blockId?: string;
+	headingLevel: number;
+	headingOccurrence: number;
+	id: string;
+	markdown: string;
+	shots: StoryboardShotSummary[];
+	title: string;
+}
+
+export interface ReadStoryboardLaneSourcesOptions {
+	documentId?: string | null;
+}
+
+interface MarkdownHeading {
+	level: number;
+	lineIndex: number;
+	text: string;
+}
+
+const headingPattern = /^(#{1,6})\s+(.+?)\s*$/u;
+const timedStoryboardBeatPattern =
+	/^\s*[-*]\s*(\d+(?:\.\d+)?)\s*(?:-|~|至|—|–)\s*(\d+(?:\.\d+)?)\s*(?:秒)?\s*[:：]\s*(.+?)\s*$/u;
+
+export const readStoryboardLaneSources = (
+	markdown: string,
+	options: ReadStoryboardLaneSourcesOptions = {},
+): StoryboardLaneSource[] => {
+	const lines = stripFrontmatter(markdown).split("\n");
+	const headings = readHeadings(lines);
+	const sections = collectHeadingSections(lines, headings, (heading) => heading.level === 2);
+	return sections.map((section) => sectionToLaneSource(section, options));
+};
+
+export const parseStoryboardShots = (markdown: string): StoryboardShotSummary[] => {
+	const trimmed = markdown.trim();
+	if (!trimmed) return [];
+	const heading = readHeadings(stripFrontmatter(markdown).split("\n")).find(
+		(candidate) => candidate.level === 2,
+	);
+	const title = heading?.text ?? "文字分镜";
+	const timedShots = parseTimedStoryboardBeats(title, markdown);
+	return timedShots.length > 0 ? timedShots : [parseShotSection(title, markdown)];
+};
+
+const sectionToLaneSource = (
+	section: HeadingSection,
+	options: ReadStoryboardLaneSourcesOptions,
+): StoryboardLaneSource => ({
+	blockId: section.blockId || stableSectionBlockId(section, options.documentId),
+	headingLevel: section.headingLevel,
+	headingOccurrence: section.headingOccurrence,
+	id: `${section.index}-${slugify(section.title)}`,
+	markdown: section.markdown,
+	shots: (() => {
+		const timedShots = parseTimedStoryboardBeats(section.title, section.markdown);
+		return timedShots.length > 0 ? timedShots : [parseShotSection(section.title, section.markdown)];
+	})(),
+	title: section.title,
+});
+
+const parseTimedStoryboardBeats = (
+	groupTitle: string,
+	markdown: string,
+): StoryboardShotSummary[] => {
+	const shots: StoryboardShotSummary[] = [];
+	for (const rawLine of markdown.split("\n")) {
+		const match = timedStoryboardBeatPattern.exec(rawLine);
+		if (!match?.[1] || !match[2] || !match[3]) continue;
+		const startSeconds = Number(match[1]);
+		const endSeconds = Number(match[2]);
+		if (
+			!Number.isFinite(startSeconds) ||
+			!Number.isFinite(endSeconds) ||
+			endSeconds <= startSeconds
+		) {
+			continue;
+		}
+		const content = cleanInlineMarkdown(match[3]).trim();
+		if (!content) continue;
+		const fields = readInlineStoryboardFields(content);
+		const index = shots.length + 1;
+		shots.push({
+			cameraMove: inlineField(fields, "运镜", "镜头运动", "camera move") || undefined,
+			durationLabel: `${match[1]}-${match[2]}秒`,
+			durationSeconds: endSeconds - startSeconds,
+			startSeconds,
+			endSeconds,
+			perspective: inlineField(fields, "视角", "机位", "perspective") || undefined,
+			prompt: content,
+			shotSize: inlineField(fields, "景别", "shot size") || undefined,
+			text: inlineField(fields, "动作", "画面", "描述", "视觉", "visual") || content,
+			title: `${groupTitle} · 镜头 ${String(index).padStart(2, "0")}`,
+		});
+	}
+	return shots;
+};
+
+const readInlineStoryboardFields = (value: string) => {
+	const fields = new Map<string, string>();
+	for (const segment of value.split(/[；;]/u)) {
+		const field = parseStoryboardField(segment.trim());
+		if (field) fields.set(field.key.toLowerCase(), field.value);
+	}
+	return fields;
+};
+
+const inlineField = (fields: Map<string, string>, ...keys: string[]) => {
+	for (const key of keys) {
+		const value = fields.get(key.toLowerCase())?.trim();
+		if (value) return value;
+	}
+	return "";
+};
+
+interface HeadingSection {
+	blockId?: string;
+	headingLevel: number;
+	headingOccurrence: number;
+	index: number;
+	markdown: string;
+	title: string;
+}
+
+const collectHeadingSections = (
+	lines: string[],
+	headings: MarkdownHeading[],
+	shouldStart: (heading: MarkdownHeading) => boolean,
+): HeadingSection[] => {
+	const sections: HeadingSection[] = [];
+	const occurrences = new Map<string, number>();
+
+	for (let headingIndex = 0; headingIndex < headings.length; headingIndex += 1) {
+		const heading = headings[headingIndex];
+		if (!shouldStart(heading)) continue;
+
+		const occurrenceKey = `${heading.level}|${heading.text}`;
+		const occurrence = (occurrences.get(occurrenceKey) ?? 0) + 1;
+		occurrences.set(occurrenceKey, occurrence);
+		const nextHeading = headings
+			.slice(headingIndex + 1)
+			.find((candidate) => candidate.level <= heading.level && shouldStart(candidate));
+		const endLine = nextHeading?.lineIndex ?? lines.length;
+		const markdown = lines.slice(heading.lineIndex, endLine).join("\n").trim();
+
+		sections.push({
+			blockId: sectionIdBeforeHeadingLine(lines, heading.lineIndex) ?? undefined,
+			headingLevel: heading.level,
+			headingOccurrence: occurrence,
+			index: sections.length,
+			markdown,
+			title: heading.text,
+		});
+	}
+
+	return sections;
+};
+
+const stableSectionBlockId = (section: HeadingSection, documentId?: string | null) => {
+	const normalizedDocumentId = documentId?.trim();
+	if (!normalizedDocumentId) return undefined;
+	return createSectionBlockId(
+		normalizedDocumentId,
+		section.headingLevel,
+		section.headingOccurrence,
+		section.title,
+	);
+};
+
+const readHeadings = (lines: string[]): MarkdownHeading[] =>
+	lines.flatMap((line, lineIndex) => {
+		const match = headingPattern.exec(line);
+		if (!match?.[1] || !match[2]) return [];
+
+		return {
+			level: match[1].length,
+			lineIndex,
+			text: cleanInlineMarkdown(match[2]).trim(),
+		};
+	});
+
+const parseShotSection = (title: string, markdown: string): StoryboardShotSummary => {
+	const fields = new Map<string, string>();
+	const bodyLines: string[] = [];
+	const promptLines: string[] = [];
+
+	for (const rawLine of markdown.split("\n")) {
+		if (isSectionHeadingLine(rawLine, title)) continue;
+		const line = cleanStoryboardLine(rawLine);
+		if (!line) continue;
+
+		promptLines.push(line);
+		const field = parseStoryboardField(line);
+		if (field) {
+			fields.set(field.key, field.value);
+			continue;
+		}
+
+		bodyLines.push(line);
+	}
+
+	const durationLabel = fields.get("时长") ?? fields.get("时间");
+
+	return {
+		cameraMove: fields.get("运镜"),
+		durationLabel,
+		durationSeconds: durationLabel ? parseDurationSeconds(durationLabel) : undefined,
+		perspective: fields.get("视角"),
+		prompt: promptLines.join("\n").trim(),
+		shotSize: fields.get("景别"),
+		text:
+			fields.get("动作") ??
+			fields.get("画面") ??
+			fields.get("描述") ??
+			bodyLines.join("\n").trim() ??
+			"",
+		title,
+	};
+};
+
+const isSectionHeadingLine = (line: string, title: string) => {
+	const match = headingPattern.exec(line.trim());
+	return Boolean(match?.[2] && cleanInlineMarkdown(match[2]).trim() === title);
+};
+
+const parseStoryboardField = (line: string) => {
+	const match = /^([^:：]{1,12})[:：]\s*(.+)$/u.exec(line);
+	if (!match?.[1]) return null;
+
+	const key = cleanInlineMarkdown(match[1]).trim();
+	const value = cleanInlineMarkdown(match[2] ?? "").trim();
+	if (!key || !value) return null;
+
+	return { key, value };
+};
+
+const parseDurationSeconds = (value: string) => {
+	const range = /(\d+(?:\.\d+)?)\s*(?:-|~|至|—|–)\s*(\d+(?:\.\d+)?)/u.exec(value);
+	if (range?.[1] && range[2]) {
+		const start = Number(range[1]);
+		const end = Number(range[2]);
+		if (Number.isFinite(start) && Number.isFinite(end) && end >= start) return end - start;
+	}
+
+	const seconds = /(\d+(?:\.\d+)?)\s*(?:秒|s)?/iu.exec(value)?.[1];
+	if (!seconds) return undefined;
+
+	const parsed = Number(seconds);
+	return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+const cleanStoryboardLine = (line: string) =>
+	cleanInlineMarkdown(
+		line
+			.replace(/^\s*[-*]\s+/, "")
+			.replace(/^#{1,6}\s+/, "")
+			.trim(),
+	).trim();
+
+const cleanInlineMarkdown = (value: string) =>
+	value.replace(/\*\*/g, "").replace(/`/g, "").replace(/\s+/g, " ");
+
+const stripFrontmatter = (markdown: string) => markdown.replace(/^---\n[\s\S]*?\n---\n?/, "");
+
+const slugify = (value: string) =>
+	value
+		.toLowerCase()
+		.replace(/[^a-z0-9\u4e00-\u9fa5]+/gu, "-")
+		.replace(/^-|-$/g, "") || "lane";

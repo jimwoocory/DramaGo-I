@@ -1,0 +1,220 @@
+package mcp
+
+import (
+	"strings"
+
+	mediamcp "github.com/mediago-dev/mediago-drama/packages/mcp/pkg/mcp"
+	servicegeneration "github.com/mediago-dev/mediago-drama/services/server/internal/service/generation"
+)
+
+func generationMessageRequestFromMCP(input mediamcp.GenerationMessageInput, defaultProjectID string) servicegeneration.GenerationMessageRequest {
+	request := servicegeneration.GenerationMessageRequest{
+		Kind:              strings.TrimSpace(input.Kind),
+		ConversationID:    strings.TrimSpace(input.ConversationID),
+		ScopeID:           strings.TrimSpace(input.ScopeID),
+		ProjectID:         firstNonEmpty(input.ProjectID, defaultProjectID),
+		DocumentID:        strings.TrimSpace(input.DocumentID),
+		SectionID:         strings.TrimSpace(input.SectionID),
+		CapabilityID:      strings.TrimSpace(input.CapabilityID),
+		TextExecutor:      strings.TrimSpace(input.TextExecutor),
+		ResourceType:      strings.TrimSpace(input.ResourceType),
+		RouteID:           strings.TrimSpace(input.RouteID),
+		FamilyID:          strings.TrimSpace(input.FamilyID),
+		VersionID:         strings.TrimSpace(input.VersionID),
+		Provider:          strings.TrimSpace(input.Provider),
+		ModelID:           strings.TrimSpace(input.ModelID),
+		Model:             strings.TrimSpace(input.Model),
+		Prompt:            strings.TrimSpace(input.Prompt),
+		PromptSupplements: generationPromptSupplementsFromMCP(input.PromptSupplements),
+		AssetTitle:        strings.TrimSpace(input.AssetTitle),
+		ReferenceURLs:     append([]string(nil), input.ReferenceURLs...),
+		ReferenceAssetIDs: append([]string(nil), input.ReferenceAssetIDs...),
+		ReferenceBindings: generationReferenceBindingsFromMCP(input.ReferenceBindings),
+		Params:            input.Params,
+	}
+	if input.DocumentContext != nil {
+		request.DocumentContext = generationDocumentContextFromMCP(input.DocumentContext, defaultProjectID)
+	}
+	if input.NotificationTarget != nil {
+		request.NotificationTarget = generationNotificationTargetFromMCP(input.NotificationTarget, defaultProjectID)
+	}
+	if input.PromptOptimization != nil {
+		request.PromptOptimization = generationPromptOptimizationFromMCP(input.PromptOptimization, defaultProjectID)
+	}
+	return request
+}
+
+func generationPromptSupplementsFromMCP(input []mediamcp.GenerationPromptSupplementInput) []servicegeneration.GenerationPromptSupplementRequest {
+	if len(input) == 0 {
+		return nil
+	}
+	output := make([]servicegeneration.GenerationPromptSupplementRequest, 0, len(input))
+	for _, supplement := range input {
+		output = append(output, servicegeneration.GenerationPromptSupplementRequest{
+			ReferenceID:     strings.TrimSpace(supplement.ReferenceID),
+			ReferenceName:   strings.TrimSpace(supplement.ReferenceName),
+			ReferencePrompt: strings.TrimSpace(supplement.ReferencePrompt),
+		})
+	}
+	return output
+}
+
+func generationBatchRequestFromMCP(input mediamcp.GenerationBatchInput, defaultProjectID string) servicegeneration.GenerationBatchRequest {
+	items := make([]servicegeneration.GenerationBatchItemRequest, 0, len(input.Items))
+	for _, item := range input.Items {
+		items = append(items, servicegeneration.GenerationBatchItemRequest{
+			ID:      strings.TrimSpace(item.ID),
+			Request: generationMessageRequestFromMCP(item.Request, defaultProjectID),
+		})
+	}
+	return servicegeneration.GenerationBatchRequest{
+		Kind:              strings.TrimSpace(input.Kind),
+		ConversationID:    strings.TrimSpace(input.ConversationID),
+		ConversationTitle: strings.TrimSpace(input.ConversationTitle),
+		ProjectID:         firstNonEmpty(input.ProjectID, defaultProjectID),
+		ScopeID:           strings.TrimSpace(input.ScopeID),
+		Items:             items,
+	}
+}
+
+func generationDocumentContextFromMCP(input *mediamcp.GenerationDocumentContext, defaultProjectID string) *servicegeneration.GenerationDocumentContext {
+	if input == nil {
+		return nil
+	}
+	return &servicegeneration.GenerationDocumentContext{
+		ProjectID:  firstNonEmpty(input.ProjectID, defaultProjectID),
+		DocumentID: strings.TrimSpace(input.DocumentID),
+		SectionID:  strings.TrimSpace(input.SectionID),
+	}
+}
+
+func generationReferenceBindingsFromMCP(input []mediamcp.GenerationReferenceBinding) []servicegeneration.GenerationReferenceBinding {
+	if len(input) == 0 {
+		return nil
+	}
+	output := make([]servicegeneration.GenerationReferenceBinding, 0, len(input))
+	for _, binding := range input {
+		output = append(output, servicegeneration.GenerationReferenceBinding{
+			Kind:       strings.TrimSpace(binding.Kind),
+			DocumentID: strings.TrimSpace(binding.DocumentID),
+			BlockID:    strings.TrimSpace(binding.BlockID),
+			AssetID:    strings.TrimSpace(binding.AssetID),
+			URL:        strings.TrimSpace(binding.URL),
+		})
+	}
+	return output
+}
+
+func generationPromptOptimizationFromMCP(input *mediamcp.GenerationPromptOptimizationInput, defaultProjectID string) *servicegeneration.GenerationPromptOptimizationRequest {
+	if input == nil {
+		return nil
+	}
+	return &servicegeneration.GenerationPromptOptimizationRequest{
+		ConversationID:    strings.TrimSpace(input.ConversationID),
+		ScopeID:           strings.TrimSpace(input.ScopeID),
+		ConversationTitle: strings.TrimSpace(input.ConversationTitle),
+		ProjectID:         firstNonEmpty(input.ProjectID, defaultProjectID),
+		CapabilityID:      strings.TrimSpace(input.CapabilityID),
+		Executor:          strings.TrimSpace(input.Executor),
+		RouteID:           strings.TrimSpace(input.RouteID),
+		Model:             strings.TrimSpace(input.Model),
+		ReferenceID:       strings.TrimSpace(input.ReferenceID),
+		ReferenceName:     strings.TrimSpace(input.ReferenceName),
+		ReferencePrompt:   strings.TrimSpace(input.ReferencePrompt),
+		Params:            input.Params,
+	}
+}
+
+func generationNotificationTargetFromMCP(input *mediamcp.GenerationNotificationTarget, defaultProjectID string) *servicegeneration.GenerationNotificationTarget {
+	if input == nil {
+		return nil
+	}
+	return &servicegeneration.GenerationNotificationTarget{
+		Kind:          strings.TrimSpace(input.Kind),
+		ProjectID:     firstNonEmpty(input.ProjectID, defaultProjectID),
+		DocumentID:    strings.TrimSpace(input.DocumentID),
+		DocumentTitle: strings.TrimSpace(input.DocumentTitle),
+		Section: servicegeneration.GenerationNotificationSectionTarget{
+			BlockID:           strings.TrimSpace(input.Section.BlockID),
+			DocumentID:        strings.TrimSpace(input.Section.DocumentID),
+			HeadingLevel:      input.Section.HeadingLevel,
+			HeadingOccurrence: input.Section.HeadingOccurrence,
+			HeadingText:       strings.TrimSpace(input.Section.HeadingText),
+			Markdown:          input.Section.Markdown,
+			PlainText:         input.Section.PlainText,
+			Prompt:            input.Section.Prompt,
+		},
+	}
+}
+
+func generationMessageOutputFromService(input servicegeneration.GenerationMessageResponse) mediamcp.GenerationMessageOutput {
+	return mediamcp.GenerationMessageOutput{
+		ID:        input.ID,
+		Role:      input.Role,
+		Status:    input.Status,
+		Message:   input.Message,
+		Text:      input.Text,
+		Assets:    generationAssetsFromService(input.Assets),
+		Usage:     generationUsageFromService(input.Usage),
+		Error:     input.Error,
+		ErrorCode: input.ErrorCode,
+		ErrorType: input.ErrorType,
+		Retryable: input.Retryable,
+	}
+}
+
+func generationBatchOutputFromService(input servicegeneration.GenerationBatchResponse) mediamcp.GenerationBatchOutput {
+	items := make([]mediamcp.GenerationBatchItemOutput, 0, len(input.Items))
+	for _, item := range input.Items {
+		items = append(items, mediamcp.GenerationBatchItemOutput{
+			ID:              item.ID,
+			Index:           item.Index,
+			TaskID:          item.TaskID,
+			Status:          item.Status,
+			Message:         item.Message,
+			OptimizedPrompt: item.OptimizedPrompt,
+			Error:           item.Error,
+		})
+	}
+	return mediamcp.GenerationBatchOutput{
+		ID:       input.ID,
+		Status:   input.Status,
+		Total:    input.Total,
+		Accepted: input.Accepted,
+		Failed:   input.Failed,
+		Items:    items,
+	}
+}
+
+func generationAssetsFromService(input []servicegeneration.GenerationAsset) []mediamcp.GenerationAsset {
+	if len(input) == 0 {
+		return nil
+	}
+	output := make([]mediamcp.GenerationAsset, 0, len(input))
+	for _, asset := range input {
+		output = append(output, mediamcp.GenerationAsset{
+			AssetID:      asset.AssetID,
+			Kind:         asset.Kind,
+			TaskID:       asset.TaskID,
+			Title:        asset.Title,
+			URL:          asset.URL,
+			PosterURL:    asset.PosterURL,
+			Base64:       asset.Base64,
+			MIMEType:     asset.MIMEType,
+			DownloadPath: asset.DownloadPath,
+			SlotIndex:    asset.SlotIndex,
+			Selected:     asset.Selected,
+		})
+	}
+	return output
+}
+
+func generationUsageFromService(input servicegeneration.GenerationUsage) mediamcp.GenerationUsage {
+	return mediamcp.GenerationUsage{
+		InputTokens:     input.InputTokens,
+		OutputTokens:    input.OutputTokens,
+		TotalTokens:     input.TotalTokens,
+		ReasoningTokens: input.ReasoningTokens,
+		CachedTokens:    input.CachedTokens,
+	}
+}

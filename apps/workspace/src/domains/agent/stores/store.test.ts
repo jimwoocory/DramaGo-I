@@ -1,0 +1,830 @@
+import { afterEach, describe, expect, it } from "vitest";
+import type { AgentReference } from "@/domains/agent/api/agent";
+import { pendingRootRunId } from "./constants";
+import { selectAgentMessages } from "./selectors";
+import { useAgentStore } from "./store";
+
+const assetReference: AgentReference = {
+	kind: "asset",
+	documentId: "asset-1",
+	assetId: "asset-1",
+	assetKind: "text",
+	mimeType: "text/plain",
+	title: "素材.txt",
+	category: "reference",
+	url: "/assets/asset-1.txt",
+};
+
+describe("agent store composer seed", () => {
+	afterEach(() => {
+		useAgentStore.getState().resetSession();
+		useAgentStore.setState({ composerSeed: null, runtimeAlerts: [] });
+	});
+
+	it("stores and consumes one-shot composer seed data", () => {
+		useAgentStore.getState().seedComposer({
+			reference: assetReference,
+			text: "请概述这份素材",
+			focus: true,
+		});
+
+		expect(useAgentStore.getState().composerSeed).toEqual({
+			reference: assetReference,
+			text: "请概述这份素材",
+			focus: true,
+		});
+
+		useAgentStore.getState().consumeComposerSeed();
+
+		expect(useAgentStore.getState().composerSeed).toBeNull();
+	});
+
+	it("stores mention-only composer seed data", () => {
+		useAgentStore.getState().seedComposer({
+			reference: assetReference,
+			focus: true,
+		});
+
+		expect(useAgentStore.getState().composerSeed).toEqual({
+			reference: assetReference,
+			focus: true,
+		});
+	});
+});
+
+describe("agent store runtime recovery", () => {
+	afterEach(() => {
+		useAgentStore.getState().resetSession();
+		useAgentStore.setState({ runtimeAlerts: [] });
+	});
+
+	it("hydrates pending permission requests from chat state", () => {
+		useAgentStore.getState().hydrateAgentChatState([], [], {
+			sessionId: "session-1",
+			running: true,
+			pendingPermissions: [
+				{
+					requestId: "permission-1",
+					options: [{ optionId: "allow", kind: "allow_once", name: "Allow once" }],
+					toolCall: { title: "写入 Project Brief" },
+				},
+			],
+		});
+
+		expect(useAgentStore.getState().permissionRequests).toEqual([
+			expect.objectContaining({
+				requestId: "permission-1",
+				toolCall: { title: "写入 Project Brief" },
+			}),
+		]);
+	});
+
+	it("does not hydrate stale permissions for completed chat state", () => {
+		useAgentStore.getState().hydrateAgentChatState([], [], {
+			sessionId: "session-1",
+			running: false,
+			pendingPermissions: [
+				{
+					requestId: "permission-1",
+					options: [{ optionId: "allow", kind: "allow_once", name: "Allow once" }],
+					toolCall: { title: "Read 素材.txt" },
+				},
+			],
+		});
+
+		expect(useAgentStore.getState().permissionRequests).toEqual([]);
+	});
+
+	it("syncs pending permission requests as the backend status mirror", () => {
+		useAgentStore.getState().syncPermissionRequests([
+			{
+				requestId: " permission-1 ",
+				options: [{ optionId: "allow", kind: "allow_once", name: "Allow once" }],
+				toolCall: { title: "Read 素材.txt" },
+			},
+			{
+				requestId: "permission-2",
+				options: [{ optionId: "abort", kind: "reject_once", name: "No" }],
+				toolCall: { title: "Edit 文档.md" },
+			},
+		]);
+
+		expect(useAgentStore.getState().permissionRequests.map((request) => request.requestId)).toEqual(
+			["permission-1", "permission-2"],
+		);
+
+		useAgentStore.getState().syncPermissionRequests([
+			{
+				requestId: "permission-2",
+				options: [{ optionId: "abort", kind: "reject_once", name: "No" }],
+				toolCall: { title: "Edit 文档.md" },
+			},
+		]);
+
+		expect(useAgentStore.getState().permissionRequests).toEqual([
+			expect.objectContaining({ requestId: "permission-2" }),
+		]);
+	});
+
+	it("keeps the timeline visible when the backend rootRunId does not resolve", () => {
+		// A mismatched rootRunId (e.g. re-keyed by normalization) must not blank the timeline.
+		useAgentStore.getState().hydrateAgentChatState([], [], {
+			sessionId: "session-1",
+			rootRunId: "missing-run",
+			running: false,
+			conversations: {
+				"run-1": {
+					runId: "run-1",
+					name: "主智能体",
+					status: "completed",
+					messages: [
+						{
+							id: "user-1",
+							role: "user",
+							content: "你好",
+							kind: "message",
+							createdAt: "2026-06-24T00:00:00.000Z",
+							status: "complete",
+						},
+					],
+					streamingMessageId: null,
+					children: [],
+					createdAt: "2026-06-24T00:00:00.000Z",
+					updatedAt: "2026-06-24T00:00:00.000Z",
+				},
+			},
+		});
+
+		expect(useAgentStore.getState().rootRunId).toBe("run-1");
+		expect(selectAgentMessages(useAgentStore.getState()).map((message) => message.content)).toEqual(
+			["你好"],
+		);
+	});
+
+	it("falls back to a non-empty conversation when the root conversation is empty", () => {
+		// A bind/hydrate can leave rootRunId pointing at an empty conversation while
+		// the real messages live elsewhere; the timeline must show those, not blank.
+		useAgentStore.setState({
+			rootRunId: "run-empty",
+			conversations: {
+				"run-empty": {
+					runId: "run-empty",
+					name: "主智能体",
+					status: "running",
+					messages: [],
+					streamingMessageId: null,
+					children: [],
+					createdAt: "2026-06-27T00:00:00.000Z",
+					updatedAt: "2026-06-27T00:00:02.000Z",
+				},
+				"run-1": {
+					runId: "run-1",
+					name: "主智能体",
+					status: "completed",
+					messages: [
+						{
+							id: "user-1",
+							role: "user",
+							content: "你好",
+							kind: "message",
+							createdAt: "2026-06-27T00:00:00.000Z",
+							status: "complete",
+						},
+					],
+					streamingMessageId: null,
+					children: [],
+					createdAt: "2026-06-27T00:00:00.000Z",
+					updatedAt: "2026-06-27T00:00:01.000Z",
+				},
+			},
+		});
+
+		expect(selectAgentMessages(useAgentStore.getState()).map((message) => message.content)).toEqual(
+			["你好"],
+		);
+	});
+
+	it("records runtime alerts for visible chat cards", () => {
+		useAgentStore.getState().addRuntimeAlert({
+			title: "文档 MCP 未挂载",
+			message: "mediago_drama MCP 工具未挂载。",
+			reason: "executable_unavailable",
+		});
+
+		expect(useAgentStore.getState().runtimeAlerts).toEqual([
+			expect.objectContaining({
+				title: "文档 MCP 未挂载",
+				message: "mediago_drama MCP 工具未挂载。",
+				reason: "executable_unavailable",
+			}),
+		]);
+	});
+
+	it.each([
+		{
+			label: "completed",
+			apply: () => useAgentStore.getState().finishRun("run-current"),
+			status: "completed" as const,
+		},
+		{
+			label: "failed",
+			apply: () => useAgentStore.getState().failRun("运行失败", "run-current"),
+			status: "failed" as const,
+		},
+		{
+			label: "cancelled",
+			apply: () => useAgentStore.getState().cancelRun("运行已取消", "run-current"),
+			status: "cancelled" as const,
+		},
+	])(
+		"reconciles every nonterminal conversation when the session is $label",
+		({ apply, status }) => {
+			useAgentStore.setState({
+				isRunning: true,
+				permissionRequests: [
+					{
+						requestId: "permission-1",
+						options: [{ optionId: "allow", kind: "allow_once", name: "Allow once" }],
+						toolCall: { title: "写入文档" },
+					},
+				],
+				rootRunId: "run-current",
+				conversations: {
+					"run-complete": {
+						runId: "run-complete",
+						status: "completed",
+						messages: [],
+						streamingMessageId: null,
+						children: [],
+						createdAt: "2026-07-13T00:00:00.000Z",
+						updatedAt: "2026-07-13T00:00:01.000Z",
+					},
+					"run-stale": {
+						runId: "run-stale",
+						status: "waiting",
+						messages: [
+							{
+								id: "stale-stream",
+								role: "assistant",
+								content: "历史输出",
+								kind: "message",
+								status: "streaming",
+							},
+						],
+						streamingMessageId: "stale-stream",
+						children: [],
+						createdAt: "2026-07-13T00:00:02.000Z",
+						updatedAt: "2026-07-13T00:00:03.000Z",
+					},
+					"run-current": {
+						runId: "run-current",
+						status: "running",
+						messages: [],
+						streamingMessageId: null,
+						children: [],
+						createdAt: "2026-07-13T00:00:04.000Z",
+						updatedAt: "2026-07-13T00:00:05.000Z",
+					},
+				},
+			});
+
+			apply();
+
+			const state = useAgentStore.getState();
+			expect(state.isRunning).toBe(false);
+			expect(state.permissionRequests).toEqual([]);
+			expect(state.conversations["run-current"]?.status).toBe(status);
+			expect(state.conversations["run-stale"]?.status).toBe(status);
+			expect(state.conversations["run-stale"]?.streamingMessageId).toBeNull();
+			expect(state.conversations["run-stale"]?.messages[0]?.status).toBe("complete");
+			expect(state.conversations["run-complete"]?.status).toBe("completed");
+		},
+	);
+});
+
+describe("agent store thought streaming", () => {
+	afterEach(() => {
+		useAgentStore.getState().resetSession();
+		useAgentStore.setState({
+			activity: [],
+			conversations: {},
+			isRunning: false,
+			rootRunId: null,
+			streamingMessageId: null,
+		});
+	});
+
+	it("merges consecutive thought chunks into one message", () => {
+		useAgentStore.getState().addUserMessage("你好");
+		useAgentStore.getState().appendThought("用户");
+		useAgentStore.getState().appendThought("只是打了个");
+		useAgentStore.getState().appendThought("招呼");
+
+		const thoughts = selectAgentMessages(useAgentStore.getState()).filter(
+			(message) => message.kind === "thought",
+		);
+		expect(thoughts).toHaveLength(1);
+		expect(thoughts[0]?.content).toBe("用户只是打了个招呼");
+	});
+
+	it("starts a new thought block after another message kind", () => {
+		useAgentStore.getState().addUserMessage("你好");
+		useAgentStore.getState().appendThought("第一段思考");
+		useAgentStore.getState().appendAssistantDelta("回复内容");
+		useAgentStore.getState().appendThought("第二段思考");
+
+		const thoughts = selectAgentMessages(useAgentStore.getState()).filter(
+			(message) => message.kind === "thought",
+		);
+		expect(thoughts).toHaveLength(2);
+		expect(thoughts[0]?.content).toBe("第一段思考");
+		expect(thoughts[1]?.content).toBe("第二段思考");
+	});
+
+	it("skips whitespace-only chunks and trims a new block's leading whitespace", () => {
+		useAgentStore.getState().addUserMessage("你好");
+		useAgentStore.getState().appendThought("\n\n");
+		useAgentStore.getState().appendThought("\n\n用户");
+		useAgentStore.getState().appendThought("打招呼");
+
+		const thoughts = selectAgentMessages(useAgentStore.getState()).filter(
+			(message) => message.kind === "thought",
+		);
+		expect(thoughts).toHaveLength(1);
+		expect(thoughts[0]?.content).toBe("用户打招呼");
+	});
+});
+
+describe("agent store item identity", () => {
+	afterEach(() => {
+		useAgentStore.getState().resetSession();
+		useAgentStore.setState({
+			activity: [],
+			conversations: {},
+			isRunning: false,
+			rootRunId: null,
+			streamingMessageId: null,
+		});
+	});
+
+	it("isolates concurrent assistant streams by turn, item, and phase", () => {
+		const store = useAgentStore.getState();
+		store.startRun("检查项目");
+		store.bindRootRun("run-1");
+		store.appendAssistantDelta("正在检查", "run-1", {
+			turnId: "turn-1",
+			itemId: "commentary-1",
+			phase: "commentary",
+		});
+		store.appendAssistantDelta("已完成", "run-1", {
+			turnId: "turn-1",
+			itemId: "answer-1",
+			phase: "final_answer",
+		});
+		store.completeAssistantMessage("已完成。", "run-1", {
+			turnId: "turn-1",
+			itemId: "answer-1",
+			phase: "final_answer",
+		});
+		store.completeAssistantMessage("已完成。", "run-1", {
+			turnId: "turn-1",
+			itemId: "answer-1",
+			phase: "final_answer",
+		});
+
+		const assistants = selectAgentMessages(useAgentStore.getState()).filter(
+			(message) => message.role === "assistant",
+		);
+		expect(assistants).toEqual([
+			expect.objectContaining({
+				id: "commentary-1",
+				itemId: "commentary-1",
+				turnId: "turn-1",
+				phase: "commentary",
+				content: "正在检查",
+				status: "streaming",
+			}),
+			expect.objectContaining({
+				id: "answer-1",
+				itemId: "answer-1",
+				turnId: "turn-1",
+				phase: "final_answer",
+				content: "已完成。",
+				status: "complete",
+			}),
+		]);
+	});
+
+	it("upgrades a stable assistant item from commentary to final on completion", () => {
+		const store = useAgentStore.getState();
+		store.startRun("检查项目");
+		store.bindRootRun("run-1");
+		store.appendAssistantDelta("检查中", "run-1", {
+			turnId: "turn-1",
+			itemId: "answer-1",
+			phase: "commentary",
+		});
+		store.completeAssistantMessage("检查完成。", "run-1", {
+			turnId: "turn-1",
+			itemId: "answer-1",
+			phase: "final_answer",
+		});
+
+		const assistants = selectAgentMessages(useAgentStore.getState()).filter(
+			(message) => message.role === "assistant",
+		);
+		expect(assistants).toEqual([
+			expect.objectContaining({
+				id: "answer-1",
+				itemId: "answer-1",
+				turnId: "turn-1",
+				phase: "final_answer",
+				content: "检查完成。",
+				status: "complete",
+			}),
+		]);
+	});
+
+	it("keeps phases isolated when an assistant event has no item id", () => {
+		const store = useAgentStore.getState();
+		store.startRun("检查项目");
+		store.bindRootRun("run-1");
+		store.appendAssistantDelta("检查中", "run-1", {
+			turnId: "turn-1",
+			phase: "commentary",
+		});
+		store.appendAssistantDelta("已完成", "run-1", {
+			turnId: "turn-1",
+			phase: "final_answer",
+		});
+		store.completeAssistantMessage("已完成。", "run-1", {
+			turnId: "turn-1",
+			phase: "final_answer",
+		});
+
+		const assistants = selectAgentMessages(useAgentStore.getState()).filter(
+			(message) => message.role === "assistant",
+		);
+		expect(assistants).toEqual([
+			expect.objectContaining({
+				phase: "commentary",
+				content: "检查中",
+				status: "streaming",
+			}),
+			expect.objectContaining({
+				phase: "final_answer",
+				content: "已完成。",
+				status: "complete",
+			}),
+		]);
+	});
+
+	it("strips prior assistant message segments from an aggregate semantic completion", () => {
+		const store = useAgentStore.getState();
+		store.startRun("检查项目");
+		store.bindRootRun("run-1");
+		store.appendAssistantDelta("进度1", "run-1", {
+			turnId: "turn-1",
+			itemId: "progress-1",
+			phase: "commentary",
+		});
+		store.upsertToolCallMessage("tool-1", { title: "读取文件", status: "completed" }, "run-1", {
+			turnId: "turn-1",
+			itemId: "tool-1",
+			phase: "commentary",
+		});
+		store.appendThought("工具外过程", "run-1", {
+			turnId: "turn-1",
+			itemId: "thought-1",
+			phase: "commentary",
+		});
+		store.appendAssistantDelta("进度2", "run-1", {
+			turnId: "turn-1",
+			itemId: "progress-2",
+			phase: "commentary",
+		});
+		store.appendAssistantDelta("最终", "run-1", {
+			turnId: "turn-1",
+			itemId: "answer-1",
+			phase: "final_answer",
+		});
+		store.completeAssistantMessage("进度1进度2最终", "run-1", {
+			turnId: "turn-1",
+			itemId: "answer-1",
+			phase: "final_answer",
+		});
+
+		const assistantMessages = selectAgentMessages(useAgentStore.getState()).filter(
+			(message) => message.role === "assistant" && message.kind === "message",
+		);
+		expect(assistantMessages.map((message) => message.content)).toEqual(["进度1", "进度2", "最终"]);
+		expect(assistantMessages.at(-1)).toMatchObject({
+			itemId: "answer-1",
+			phase: "final_answer",
+			status: "complete",
+		});
+	});
+
+	it("merges thought chunks by item id even when other items interleave", () => {
+		const store = useAgentStore.getState();
+		store.startRun("分析");
+		store.bindRootRun("run-1");
+		store.appendThought("先读", "run-1", {
+			turnId: "turn-1",
+			itemId: "thought-1",
+			phase: "commentary",
+		});
+		store.appendThought("再看", "run-1", {
+			turnId: "turn-1",
+			itemId: "thought-2",
+			phase: "commentary",
+		});
+		store.appendThought("文件", "run-1", {
+			turnId: "turn-1",
+			itemId: "thought-1",
+			phase: "commentary",
+		});
+
+		const thoughts = selectAgentMessages(useAgentStore.getState()).filter(
+			(message) => message.kind === "thought",
+		);
+		expect(thoughts).toEqual([
+			expect.objectContaining({ itemId: "thought-1", content: "先读文件" }),
+			expect.objectContaining({ itemId: "thought-2", content: "再看" }),
+		]);
+	});
+
+	it("preserves semantic identity for plans, tools, runtime logs, and forms", () => {
+		const store = useAgentStore.getState();
+		store.startRun("执行");
+		store.bindRootRun("run-1");
+		store.setPlan([{ content: "读取", status: "in_progress" }], "run-1", {
+			turnId: "turn-1",
+			itemId: "plan-1",
+			phase: "commentary",
+		});
+		store.upsertToolCallMessage("tool-call-1", { status: "in_progress" }, "run-1", {
+			turnId: "turn-1",
+			itemId: "tool-item-1",
+			phase: "commentary",
+		});
+		store.recordRuntimeLog({ content: "stderr", toolCallId: "runtime-1" }, "run-1", {
+			turnId: "turn-1",
+			itemId: "runtime-item-1",
+			phase: "commentary",
+		});
+		store.addFormMessage(
+			{ selectionId: "selection-1", title: "确认", fields: [] },
+			"需要确认",
+			"run-1",
+			{ turnId: "turn-1", itemId: "form-1" },
+		);
+
+		const messages = selectAgentMessages(useAgentStore.getState());
+		expect(messages.find((message) => message.kind === "plan")).toMatchObject({
+			id: "plan-1",
+			itemId: "plan-1",
+			turnId: "turn-1",
+			phase: "commentary",
+		});
+		expect(messages.find((message) => message.kind === "tool")).toMatchObject({
+			id: "tool-item-1",
+			itemId: "tool-item-1",
+			turnId: "turn-1",
+			phase: "commentary",
+		});
+		expect(messages.find((message) => message.kind === "runtime")).toMatchObject({
+			id: "runtime-item-1",
+			itemId: "runtime-item-1",
+			turnId: "turn-1",
+			phase: "commentary",
+		});
+		expect(messages.find((message) => message.metadata?.form)).toMatchObject({
+			id: "form-1",
+			itemId: "form-1",
+			turnId: "turn-1",
+		});
+	});
+
+	it("binds only the latest optimistic turn to the accepted run", () => {
+		useAgentStore.setState({
+			rootRunId: "run-old",
+			conversations: {
+				"run-old": {
+					runId: "run-old",
+					status: "completed",
+					messages: [
+						{ id: "user-old", role: "user", content: "旧问题", status: "complete" },
+						{ id: "answer-old", role: "assistant", content: "旧回答", status: "complete" },
+					],
+					streamingMessageId: null,
+					children: [],
+					createdAt: "2026-07-14T00:00:00.000Z",
+					updatedAt: "2026-07-14T00:00:01.000Z",
+				},
+			},
+		});
+
+		useAgentStore.getState().startRun("新问题");
+		useAgentStore.getState().bindRootRun("run-new");
+
+		const messages = selectAgentMessages(useAgentStore.getState());
+		expect(messages[0]).not.toHaveProperty("turnId");
+		expect(messages[1]).not.toHaveProperty("turnId");
+		expect(messages[2]).toMatchObject({
+			role: "user",
+			content: "新问题",
+			turnId: "run-new",
+			itemId: expect.any(String),
+		});
+	});
+});
+
+describe("agent store pending user turns", () => {
+	afterEach(() => {
+		useAgentStore.getState().resetSession();
+		useAgentStore.setState({
+			activity: [],
+			conversations: {},
+			isRunning: false,
+			rootRunId: null,
+			runtimeAlerts: [],
+			streamingMessageId: null,
+		});
+	});
+
+	it("records a sent user message before the run starts", () => {
+		useAgentStore.getState().addUserMessage("这个故事讲了什么", {
+			displayAttachments: [{ name: "素材.txt", size: 1024 }],
+		});
+
+		const state = useAgentStore.getState();
+		expect(state.isRunning).toBe(false);
+		expect(state.rootRunId).toBe(pendingRootRunId);
+		expect(state.conversations[pendingRootRunId]).toMatchObject({
+			status: "completed",
+			messages: [
+				expect.objectContaining({
+					role: "user",
+					content: "这个故事讲了什么",
+					metadata: {
+						displayAttachments: [{ name: "素材.txt", size: 1024 }],
+					},
+				}),
+			],
+		});
+	});
+
+	it("keeps existing chat messages visible when starting a follow-up run", () => {
+		useAgentStore.setState({
+			rootRunId: "run-1",
+			conversations: {
+				"run-1": {
+					runId: "run-1",
+					name: "主智能体",
+					status: "completed",
+					messages: [
+						{
+							id: "user-1",
+							role: "user",
+							content: "第一个问题",
+							kind: "message",
+							status: "complete",
+						},
+						{
+							id: "assistant-1",
+							role: "assistant",
+							content: "第一个回答",
+							kind: "message",
+							status: "complete",
+						},
+					],
+					streamingMessageId: null,
+					children: [],
+					createdAt: "2026-06-09T00:00:00.000Z",
+					updatedAt: "2026-06-09T00:00:00.000Z",
+				},
+			},
+		});
+
+		useAgentStore.getState().startRun("第二个问题");
+
+		const state = useAgentStore.getState();
+		expect(state.rootRunId).toBe(pendingRootRunId);
+		expect(selectAgentMessages(state)).toEqual([
+			expect.objectContaining({ role: "user", content: "第一个问题" }),
+			expect.objectContaining({ role: "assistant", content: "第一个回答" }),
+			expect.objectContaining({ role: "user", content: "第二个问题" }),
+		]);
+	});
+
+	it("keeps existing chat messages visible when staging a user message before confirmation", () => {
+		useAgentStore.setState({
+			rootRunId: "run-1",
+			conversations: {
+				"run-1": {
+					runId: "run-1",
+					name: "主智能体",
+					status: "completed",
+					messages: [
+						{
+							id: "user-1",
+							role: "user",
+							content: "第一个问题",
+							kind: "message",
+							status: "complete",
+						},
+						{
+							id: "assistant-1",
+							role: "assistant",
+							content: "第一个回答",
+							kind: "message",
+							status: "complete",
+						},
+					],
+					streamingMessageId: null,
+					children: [],
+					createdAt: "2026-06-09T00:00:00.000Z",
+					updatedAt: "2026-06-09T00:00:00.000Z",
+				},
+			},
+		});
+
+		useAgentStore.getState().addUserMessage("第二个问题");
+
+		expect(selectAgentMessages(useAgentStore.getState())).toEqual([
+			expect.objectContaining({ role: "user", content: "第一个问题" }),
+			expect.objectContaining({ role: "assistant", content: "第一个回答" }),
+			expect.objectContaining({ role: "user", content: "第二个问题" }),
+		]);
+	});
+
+	it("marks the pending user turn as running after confirmation", () => {
+		useAgentStore.getState().addUserMessage("这个故事讲了什么");
+		useAgentStore.getState().beginPendingRun();
+
+		const state = useAgentStore.getState();
+		expect(state.isRunning).toBe(true);
+		expect(state.conversations[pendingRootRunId]?.status).toBe("running");
+	});
+
+	it("removes an A2UI message from the active conversation", () => {
+		useAgentStore.getState().addUserMessage("这个故事讲了什么");
+		useAgentStore.getState().addA2UIMessage({
+			version: "v0.9",
+			surfaceId: "surface-1",
+			messages: [],
+		});
+		const uiMessage = selectAgentMessages(useAgentStore.getState()).find(
+			(message) => message.metadata?.a2ui,
+		);
+		expect(uiMessage).toBeTruthy();
+
+		useAgentStore.getState().removeMessage(uiMessage?.id ?? "");
+
+		const state = useAgentStore.getState();
+		expect(selectAgentMessages(state).some((message) => message.id === uiMessage?.id)).toBe(false);
+		expect(
+			state.conversations[pendingRootRunId]?.messages.some(
+				(message) => message.id === uiMessage?.id,
+			),
+		).toBe(false);
+	});
+});
+
+describe("agent store applyEventSequence", () => {
+	afterEach(() => {
+		useAgentStore.getState().resetSession();
+	});
+
+	it("advances the cursor for the first and contiguous sequenced events", () => {
+		const store = useAgentStore.getState();
+		expect(store.applyEventSequence(5)).toEqual({ duplicate: false, gap: false });
+		expect(useAgentStore.getState().lastEventId).toBe("5");
+		expect(store.applyEventSequence(6)).toEqual({ duplicate: false, gap: false });
+		expect(useAgentStore.getState().lastEventId).toBe("6");
+	});
+
+	it("flags duplicates without rewinding the cursor", () => {
+		const store = useAgentStore.getState();
+		store.applyEventSequence(6);
+		expect(store.applyEventSequence(6)).toEqual({ duplicate: true, gap: false });
+		expect(store.applyEventSequence(3)).toEqual({ duplicate: true, gap: false });
+		expect(useAgentStore.getState().lastEventId).toBe("6");
+	});
+
+	it("flags a gap and still advances when a sequence is skipped", () => {
+		const store = useAgentStore.getState();
+		store.applyEventSequence(6);
+		expect(store.applyEventSequence(9)).toEqual({ duplicate: false, gap: true });
+		expect(useAgentStore.getState().lastEventId).toBe("9");
+	});
+
+	it("always applies unsequenced events without dedup or gap", () => {
+		const store = useAgentStore.getState();
+		store.applyEventSequence(6);
+		expect(store.applyEventSequence(0)).toEqual({ duplicate: false, gap: false });
+		expect(store.applyEventSequence(undefined)).toEqual({ duplicate: false, gap: false });
+		expect(useAgentStore.getState().lastEventId).toBe("6");
+	});
+});

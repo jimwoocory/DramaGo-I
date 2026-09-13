@@ -1,0 +1,2828 @@
+package generation
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"fmt"
+	"image"
+	"image/color"
+	_ "image/jpeg"
+	"image/png"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	coregeneration "github.com/mediago-dev/mediago-drama/packages/core/pkg/generation"
+	"github.com/mediago-dev/mediago-drama/packages/core/pkg/generation/runtime"
+	"github.com/mediago-dev/mediago-drama/packages/core/pkg/multimodal"
+	mediamcp "github.com/mediago-dev/mediago-drama/packages/mcp/pkg/mcp"
+	"github.com/mediago-dev/mediago-drama/services/server/internal/service/media"
+	"github.com/mediago-dev/mediago-drama/services/server/internal/service/settings"
+	"github.com/mediago-dev/mediago-drama/services/server/internal/service/textcompletion"
+)
+
+func TestCacheGenerationResponseAssetsSavesBase64Locally(t *testing.T) {
+	mediaDir := t.TempDir()
+	mediaAssets := newTestMediaAssets(t, filepath.Join(t.TempDir(), "settings.db"), mediaDir)
+	workflow := NewGenerationService(nil, nil, mediaAssets)
+
+	response := workflow.CacheGenerationResponseAssets(context.Background(), coregeneration.Response{
+		ID:    "resp-test",
+		Model: "doubao-seedream-5.0-lite",
+		Assets: []coregeneration.Asset{
+			{
+				Kind:     coregeneration.KindImage,
+				Base64:   base64.StdEncoding.EncodeToString([]byte("image-bytes")),
+				MIMEType: "image/png",
+			},
+		},
+	})
+
+	if len(response.Assets) != 1 {
+		t.Fatalf("asset count = %d, want 1", len(response.Assets))
+	}
+	if !strings.HasPrefix(response.Assets[0].URL, "/api/v1/media-assets/") {
+		t.Fatalf("asset url = %q, want local media asset url", response.Assets[0].URL)
+	}
+	if response.Assets[0].Base64 != "" {
+		t.Fatalf("asset base64 should be cleared after local cache")
+	}
+
+	files, err := os.ReadDir(mediaDir)
+	if err != nil {
+		t.Fatalf("reading media dir: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("cached files = %d, want 1", len(files))
+	}
+
+	assets, err := mediaAssets.List("")
+	if err != nil {
+		t.Fatalf("listing media assets: %v", err)
+	}
+	if len(assets) != 1 || assets[0].URL != response.Assets[0].URL {
+		t.Fatalf("assets = %+v, want cached asset record", assets)
+	}
+}
+
+func TestCacheGenerationResponseAssetsRecordsWarnings(t *testing.T) {
+	mediaAssets := newTestMediaAssets(t, filepath.Join(t.TempDir(), "settings.db"), t.TempDir())
+	workflow := NewGenerationService(nil, nil, mediaAssets)
+
+	response := workflow.CacheGenerationResponseAssets(context.Background(), coregeneration.Response{
+		ID:    "resp-test",
+		Model: "doubao-seedream-5.0-lite",
+		Assets: []coregeneration.Asset{
+			{
+				Kind: coregeneration.KindImage,
+				URL:  "ftp://example.test/image.png",
+			},
+		},
+	})
+
+	warnings := StringSliceFromMetadata(response.Metadata, "asset_cache_warnings")
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "unsupported generated asset url") {
+		t.Fatalf("warnings = %#v, want unsupported url warning", warnings)
+	}
+}
+
+func TestCacheGenerationResponseAssetsSkipsLocalMediaAssetURLs(t *testing.T) {
+	mediaAssets := newTestMediaAssets(t, filepath.Join(t.TempDir(), "settings.db"), t.TempDir())
+	workflow := NewGenerationService(nil, nil, mediaAssets)
+
+	response := workflow.CacheGenerationResponseAssets(context.Background(), coregeneration.Response{
+		ID:    "resp-test",
+		Model: "doubao-seedream-5.0-lite",
+		Assets: []coregeneration.Asset{
+			{
+				Kind: coregeneration.KindImage,
+				URL:  "http://localhost:5173/api/v1/projects/project-a/media-assets/image-1/content",
+			},
+		},
+	})
+
+	if warnings := StringSliceFromMetadata(response.Metadata, "asset_cache_warnings"); len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want local media URL skipped without warning", warnings)
+	}
+	if response.Assets[0].URL != "http://localhost:5173/api/v1/projects/project-a/media-assets/image-1/content" {
+		t.Fatalf("asset url = %q, want unchanged local media URL", response.Assets[0].URL)
+	}
+}
+
+func TestResolveGenerationReferencesCompressesImageAssets(t *testing.T) {
+	mediaAssets := newTestMediaAssets(t, filepath.Join(t.TempDir(), "settings.db"), t.TempDir())
+	asset := savePNGReferenceAsset(t, mediaAssets, 1800, 900)
+	workflow := NewGenerationService(nil, nil, mediaAssets)
+	route, ok := coregeneration.FindRoute(coregeneration.RouteDMXGPTImage2)
+	if !ok {
+		t.Fatal("dmx gpt image route is missing")
+	}
+
+	references, err := workflow.resolveGenerationReferences(route, generationMessageRequest{
+		ReferenceAssetIDs: []string{asset.ID},
+	})
+	if err != nil {
+		t.Fatalf("resolving references: %v", err)
+	}
+	if len(references) != 1 {
+		t.Fatalf("references = %d, want 1", len(references))
+	}
+	if !strings.HasPrefix(references[0], "data:image/jpeg;base64,") {
+		t.Fatalf("reference = %q, want compressed jpeg data uri", references[0][:min(64, len(references[0]))])
+	}
+
+	_, encoded, _ := strings.Cut(references[0], ",")
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatalf("decoding reference data uri: %v", err)
+	}
+	imageValue, format, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("decoding compressed reference: %v", err)
+	}
+	if format != "jpeg" {
+		t.Fatalf("format = %q, want jpeg", format)
+	}
+	bounds := imageValue.Bounds()
+	if max(bounds.Dx(), bounds.Dy()) > 512 {
+		t.Fatalf("reference size = %dx%d, want long side <= 512", bounds.Dx(), bounds.Dy())
+	}
+}
+
+func TestResolveGenerationReferencesReadsLocalMediaReferenceURLs(t *testing.T) {
+	mediaAssets := newTestMediaAssets(t, filepath.Join(t.TempDir(), "settings.db"), t.TempDir())
+	asset := savePNGReferenceAsset(t, mediaAssets, 320, 180)
+	workflow := NewGenerationService(nil, nil, mediaAssets)
+	route, ok := coregeneration.FindRoute(coregeneration.RouteJimengSeedance20Fast)
+	if !ok {
+		t.Fatal("jimeng seedance route is missing")
+	}
+
+	references, err := workflow.resolveGenerationReferences(route, generationMessageRequest{
+		ReferenceURLs: []string{
+			asset.URL,
+			"/api/v1/media-assets/" + asset.ID + "/content",
+			"http://localhost:5173/api/v1/projects/project-alpha/media-assets/" + asset.ID + "/content",
+			"api/v1/media-assets/" + asset.ID + "/content",
+		},
+	})
+	if err != nil {
+		t.Fatalf("resolving references: %v", err)
+	}
+	if len(references) != 1 {
+		t.Fatalf("references = %d, want one deduplicated local media reference", len(references))
+	}
+	if !strings.HasPrefix(references[0], "data:image/png;base64,") {
+		t.Fatalf("reference = %q, want local media data uri", references[0][:min(64, len(references[0]))])
+	}
+}
+
+func TestResolveGenerationReferencesIncludesAudioAssetsForJimengVideoRoutes(t *testing.T) {
+	mediaAssets := newTestMediaAssets(t, filepath.Join(t.TempDir(), "settings.db"), t.TempDir())
+	imageAsset := savePNGReferenceAsset(t, mediaAssets, 320, 180)
+	audioAsset, err := mediaAssets.SaveBase64(
+		media.MediaKindAudio,
+		"audio/mpeg",
+		base64.StdEncoding.EncodeToString([]byte("audio-bytes")),
+		"",
+		"",
+	)
+	if err != nil {
+		t.Fatalf("saving audio reference: %v", err)
+	}
+	workflow := NewGenerationService(nil, nil, mediaAssets)
+	route, ok := coregeneration.FindRoute(coregeneration.RouteJimengSeedance20Fast)
+	if !ok {
+		t.Fatal("jimeng seedance route is missing")
+	}
+
+	references, err := workflow.resolveGenerationReferences(route, generationMessageRequest{
+		ReferenceAssetIDs: []string{imageAsset.ID, audioAsset.ID},
+	})
+	if err != nil {
+		t.Fatalf("resolving references: %v", err)
+	}
+	if len(references) != 2 {
+		t.Fatalf("references = %d, want image and audio provider references", len(references))
+	}
+	if !strings.HasPrefix(references[0], "data:image/png;base64,") {
+		t.Fatalf("reference = %q, want local image data uri", references[0][:min(64, len(references[0]))])
+	}
+	if !strings.HasPrefix(references[1], "data:audio/mpeg;base64,") {
+		t.Fatalf("reference = %q, want local audio data uri", references[1][:min(64, len(references[1]))])
+	}
+}
+
+func TestResolveGenerationReferencesReadsLinkedVoicePreviewAudioForJimengVideoRoutes(t *testing.T) {
+	mediaAssets := newTestMediaAssets(t, filepath.Join(t.TempDir(), "settings.db"), t.TempDir())
+	previewURL := "/api/v1/generation/voice-previews/official.minimax-speech-2.8-turbo/English_Aussie_Bloke"
+	audioAsset, err := mediaAssets.SaveLinkedAssetWithOptions(
+		media.MediaKindAudio,
+		previewURL,
+		"English_Aussie_Bloke",
+		"audio/mpeg",
+		media.MediaAssetSaveOptions{Source: media.MediaSourcePreview},
+	)
+	if err != nil {
+		t.Fatalf("saving linked audio reference: %v", err)
+	}
+	if audioAsset.FilePath != "" {
+		t.Fatalf("linked audio file path = %q, want empty", audioAsset.FilePath)
+	}
+	workflow := NewGenerationService(nil, nil, mediaAssets)
+	workflow.voicePreviews = testVoicePreviewStore(t)
+	route, ok := coregeneration.FindRoute(coregeneration.RouteJimengSeedance20Fast)
+	if !ok {
+		t.Fatal("jimeng seedance route is missing")
+	}
+
+	references, err := workflow.resolveGenerationReferences(route, generationMessageRequest{
+		ReferenceAssetIDs: []string{audioAsset.ID},
+	})
+	if err != nil {
+		t.Fatalf("resolving references: %v", err)
+	}
+	if len(references) != 1 {
+		t.Fatalf("references = %d, want linked audio provider reference", len(references))
+	}
+	if references[0] != "data:audio/mpeg;base64,bXAz" {
+		t.Fatalf("reference = %q, want bundled voice preview audio data uri", references[0])
+	}
+}
+
+func TestResolveGenerationReferencesSkipsAudioAssetsForUnsupportedVideoRoutes(t *testing.T) {
+	mediaAssets := newTestMediaAssets(t, filepath.Join(t.TempDir(), "settings.db"), t.TempDir())
+	imageAsset := savePNGReferenceAsset(t, mediaAssets, 320, 180)
+	audioAsset, err := mediaAssets.SaveBase64(
+		media.MediaKindAudio,
+		"audio/mpeg",
+		base64.StdEncoding.EncodeToString([]byte("audio-bytes")),
+		"",
+		"",
+	)
+	if err != nil {
+		t.Fatalf("saving audio reference: %v", err)
+	}
+	workflow := NewGenerationService(nil, nil, mediaAssets)
+	route, ok := coregeneration.FindRoute(coregeneration.RouteOfficialSeedance20Fast)
+	if !ok {
+		t.Fatal("official seedance route is missing")
+	}
+
+	references, err := workflow.resolveGenerationReferences(route, generationMessageRequest{
+		ReferenceAssetIDs: []string{imageAsset.ID, audioAsset.ID},
+	})
+	if err != nil {
+		t.Fatalf("resolving references: %v", err)
+	}
+	if len(references) != 1 {
+		t.Fatalf("references = %d, want only the image provider reference", len(references))
+	}
+	if !strings.HasPrefix(references[0], "data:image/png;base64,") {
+		t.Fatalf("reference = %q, want local image data uri", references[0][:min(64, len(references[0]))])
+	}
+}
+
+func TestImportGenerationMediaAssetsCreatesReferenceHistoryTasks(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "settings.db")
+	seedGenerationTaskProject(t, dbPath, "project-alpha")
+	mediaAssets := newTestMediaAssets(t, dbPath, t.TempDir())
+	generatedID := 0
+	generationTasks := newTestGenerationTaskService(t, dbPath, func(prefix string) (string, error) {
+		generatedID++
+		return fmt.Sprintf("%s-%d", prefix, generatedID), nil
+	})
+	workflow := NewGenerationService(nil, generationTasks, mediaAssets)
+	asset := savePNGReferenceAsset(t, mediaAssets, 320, 180)
+
+	response, status, err := workflow.ImportGenerationMediaAssets(ImportGenerationMediaAssetsRequest{
+		Kind:              "image",
+		ConversationID:    "project-alpha-image",
+		ScopeID:           "agent",
+		ConversationTitle: "Project image session",
+		ProjectID:         "project-alpha",
+		DocumentID:        "story-doc",
+		SectionID:         "section-a",
+		CapabilityID:      "scene",
+		AssetIDs:          []string{asset.ID},
+		AssetTitle:        "场景图",
+	})
+	if err != nil {
+		t.Fatalf("importing media assets: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want %d", status, http.StatusOK)
+	}
+	if len(response.Tasks) != 1 {
+		t.Fatalf("tasks = %+v, want one imported task", response.Tasks)
+	}
+	task := response.Tasks[0]
+	if task.ID != "media-library-1" ||
+		task.ConversationID != "project-alpha-image" ||
+		task.ProjectID != "project-alpha" ||
+		task.DocumentID != "story-doc" ||
+		task.SectionID != "section-a" ||
+		task.CapabilityID != "scene" ||
+		task.RouteID != importedMediaGenerationRouteID ||
+		task.Status != "completed" {
+		t.Fatalf("task = %+v, want completed imported media task", task)
+	}
+	if len(task.ReferenceAssetIDs) != 1 || task.ReferenceAssetIDs[0] != asset.ID {
+		t.Fatalf("reference asset ids = %#v, want imported media asset id", task.ReferenceAssetIDs)
+	}
+	if len(task.Assets) != 1 ||
+		task.Assets[0].URL != asset.URL ||
+		task.Assets[0].Title != asset.Filename ||
+		task.Assets[0].Selected {
+		t.Fatalf("assets = %+v, want unselected reference to media asset", task.Assets)
+	}
+
+	conversation, ok, err := generationTasks.GetConversation("project-alpha-image")
+	if err != nil {
+		t.Fatalf("getting created conversation: %v", err)
+	}
+	if !ok || conversation.ScopeID != "agent" || conversation.Kind != "image" {
+		t.Fatalf("conversation = %+v ok=%v, want imported image conversation", conversation, ok)
+	}
+}
+
+func TestImportGenerationMediaAssetsCreatesVideoHistoryTasks(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "settings.db")
+	seedGenerationTaskProject(t, dbPath, "project-alpha")
+	mediaAssets := newTestMediaAssets(t, dbPath, t.TempDir())
+	generatedID := 0
+	generationTasks := newTestGenerationTaskService(t, dbPath, func(prefix string) (string, error) {
+		generatedID++
+		return fmt.Sprintf("%s-%d", prefix, generatedID), nil
+	})
+	workflow := NewGenerationService(nil, generationTasks, mediaAssets)
+	asset, err := mediaAssets.SaveReader(
+		context.Background(),
+		bytes.NewReader([]byte("video-bytes")),
+		"scene.mp4",
+		"video/mp4",
+		"",
+	)
+	if err != nil {
+		t.Fatalf("saving reference video: %v", err)
+	}
+
+	response, status, err := workflow.ImportGenerationMediaAssets(ImportGenerationMediaAssetsRequest{
+		Kind:              "video",
+		ConversationID:    "project-alpha-video",
+		ScopeID:           "agent",
+		ConversationTitle: "Project video session",
+		ProjectID:         "project-alpha",
+		DocumentID:        "story-doc",
+		SectionID:         "section-video",
+		CapabilityID:      "storyboard",
+		AssetIDs:          []string{asset.ID},
+		AssetTitle:        "分镜视频",
+	})
+	if err != nil {
+		t.Fatalf("importing video media assets: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want %d", status, http.StatusOK)
+	}
+	if len(response.Tasks) != 1 {
+		t.Fatalf("tasks = %+v, want one imported video task", response.Tasks)
+	}
+	task := response.Tasks[0]
+	if task.Kind != "video" ||
+		task.ConversationID != "project-alpha-video" ||
+		task.SectionID != "section-video" ||
+		task.CapabilityID != "storyboard" ||
+		task.RouteID != importedMediaGenerationRouteID ||
+		task.Status != "completed" {
+		t.Fatalf("task = %+v, want completed imported video task", task)
+	}
+	if len(task.Assets) != 1 ||
+		task.Assets[0].Kind != "video" ||
+		task.Assets[0].URL != asset.URL ||
+		task.Assets[0].MIMEType != "video/mp4" ||
+		task.Assets[0].Selected {
+		t.Fatalf("assets = %+v, want unselected video media asset", task.Assets)
+	}
+
+	conversation, ok, err := generationTasks.GetConversation("project-alpha-video")
+	if err != nil {
+		t.Fatalf("getting created conversation: %v", err)
+	}
+	if !ok || conversation.ScopeID != "agent" || conversation.Kind != "video" {
+		t.Fatalf("conversation = %+v ok=%v, want imported video conversation", conversation, ok)
+	}
+}
+
+func TestSanitizedGenerationRequestOmitsReferenceBase64(t *testing.T) {
+	encoded := base64.StdEncoding.EncodeToString([]byte("secret-reference-bytes"))
+	logValue := sanitizedGenerationRequest(coregeneration.Request{
+		Kind:          coregeneration.KindImage,
+		RouteID:       coregeneration.RouteDMXGPTImage2,
+		Model:         "gpt-image-2-ssvip",
+		Prompt:        "make an image",
+		ReferenceURLs: []string{"data:image/png;base64," + encoded},
+	})
+
+	references, ok := logValue["reference_urls"].([]map[string]any)
+	if !ok || len(references) != 1 {
+		t.Fatalf("reference_urls = %#v, want one sanitized reference", logValue["reference_urls"])
+	}
+	if value := references[0]["value"]; value != "data:image/png;base64,<omitted>" {
+		t.Fatalf("reference value = %#v, want omitted data uri", value)
+	}
+	if got := references[0]["base64_chars"]; got != len(encoded) {
+		t.Fatalf("base64_chars = %#v, want %d", got, len(encoded))
+	}
+	if strings.Contains(fmt.Sprint(logValue), encoded) {
+		t.Fatal("sanitized request still contains base64 data")
+	}
+}
+
+func TestResponseFormatForRouteUsesURLForDMXResponsesImages(t *testing.T) {
+	route, ok := coregeneration.FindRoute(coregeneration.RouteDMXSeedream5Lite)
+	if !ok {
+		t.Fatal("dmx seedream route is missing")
+	}
+	if got := ResponseFormatForRoute(route); got != "url" {
+		t.Fatalf("responseFormatForRoute() = %q, want url", got)
+	}
+
+	route, ok = coregeneration.FindRoute(coregeneration.RouteDMXGPTImage2)
+	if !ok {
+		t.Fatal("dmx gpt image route is missing")
+	}
+	if got := ResponseFormatForRoute(route); got != "url" {
+		t.Fatalf("responseFormatForRoute() = %q, want url", got)
+	}
+}
+
+func TestShouldPersistGenerationTaskIncludesImages(t *testing.T) {
+	route, ok := coregeneration.FindRoute(coregeneration.RouteDMXSeedream5Lite)
+	if !ok {
+		t.Fatal("dmx seedream route is missing")
+	}
+	if !ShouldPersistGenerationTask(route) {
+		t.Fatal("image generation route should be persisted")
+	}
+}
+
+func TestGenerationTaskFromMessageRecordsFailureReason(t *testing.T) {
+	route, ok := coregeneration.FindRoute(coregeneration.RouteDMXGPTImage2)
+	if !ok {
+		t.Fatal("dmx gpt image route is missing")
+	}
+
+	task := GenerationTaskFromMessage(GenerationMessageRequest{
+		Kind:    string(coregeneration.KindImage),
+		RouteID: route.ID,
+		Model:   route.Model,
+		Prompt:  "make an image",
+	}, route, GenerationMessageResponse{
+		ID:        "generation_failed",
+		Role:      "assistant",
+		Status:    "failed",
+		Message:   "请求参数无效，请调整参数后重试。",
+		Error:     "dmx request failed with status 400: bad prompt",
+		ErrorCode: "invalid_parameter",
+		ErrorType: "invalid_parameter",
+		Retryable: false,
+		Assets:    []GenerationAsset{},
+		Usage:     GenerationUsage{},
+	})
+
+	if task.Status != "failed" {
+		t.Fatalf("status = %q, want failed", task.Status)
+	}
+	if task.CapabilityID != "image.generate" {
+		t.Fatalf("capability id = %q, want image.generate", task.CapabilityID)
+	}
+	if task.Error != "dmx request failed with status 400: bad prompt" {
+		t.Fatalf("error = %q, want raw failure detail", task.Error)
+	}
+	if task.ErrorCode != "invalid_parameter" || task.ErrorType != "invalid_parameter" || task.Retryable {
+		t.Fatalf("failure fields = %+v, want invalid parameter failure", task)
+	}
+}
+
+func TestFailedGenerationResponseMapsProviderFailure(t *testing.T) {
+	rawBody := `{"error":{"code":"ModelNotOpen","message":"Your account 2100815854 has not activated the model doubao-seedance-2-0-mini-260615. Please activate the model service in the Ark Console.","type":"Not Found"}}`
+	response := FailedGenerationResponse("task_failed", &coregeneration.HTTPError{
+		Provider:   coregeneration.ProviderVolcengine,
+		StatusCode: 404,
+		Body:       rawBody,
+		Code:       "provider_http_error",
+		Reason:     coregeneration.FailureProviderError,
+		Message:    "Provider request failed.",
+		Retryable:  false,
+	})
+
+	if response.Message != "供应商返回错误，请稍后重试或调整请求。" {
+		t.Fatalf("message = %q, want provider failure message", response.Message)
+	}
+	if response.Error != rawBody ||
+		response.ErrorCode != "provider_http_error" ||
+		response.ErrorType != "provider_error" ||
+		response.Retryable {
+		t.Fatalf("response = %+v, want structured provider failure with raw detail", response)
+	}
+}
+
+func TestGenerationTaskFromMessagePreservesExplicitCapabilityID(t *testing.T) {
+	route, ok := coregeneration.FindRoute(coregeneration.RouteDMXGPT41MiniText)
+	if !ok {
+		t.Fatal("dmx text route is missing")
+	}
+
+	task := GenerationTaskFromMessage(GenerationMessageRequest{
+		CapabilityID: "novel.understand",
+		Kind:         string(coregeneration.KindText),
+		RouteID:      route.ID,
+		Model:        route.Model,
+		Prompt:       "read this",
+	}, route, GenerationMessageResponse{
+		ID:      "generation_text",
+		Role:    "assistant",
+		Status:  "completed",
+		Message: "done",
+		Usage:   GenerationUsage{InputTokens: 1, TotalTokens: 1},
+	})
+
+	if task.CapabilityID != "novel.understand" {
+		t.Fatalf("capability id = %q, want explicit capability", task.CapabilityID)
+	}
+}
+
+func savePNGReferenceAsset(
+	t *testing.T,
+	mediaAssets *media.MediaAssets,
+	width int,
+	height int,
+) media.MediaAsset {
+	t.Helper()
+
+	source := image.NewRGBA(image.Rect(0, 0, width, height))
+	for y := range height {
+		for x := range width {
+			source.SetRGBA(x, y, color.RGBA{
+				R: uint8((x*31 + y*17) % 256),
+				G: uint8((x*11 + y*23) % 256),
+				B: uint8((x*7 + y*5) % 256),
+				A: 255,
+			})
+		}
+	}
+
+	var output bytes.Buffer
+	if err := png.Encode(&output, source); err != nil {
+		t.Fatalf("encoding source image: %v", err)
+	}
+
+	asset, err := mediaAssets.SaveReader(
+		context.Background(),
+		bytes.NewReader(output.Bytes()),
+		"reference.png",
+		"image/png",
+		"",
+	)
+	if err != nil {
+		t.Fatalf("saving reference image: %v", err)
+	}
+	return asset
+}
+
+func TestSubmittedGenerationTaskClearsPreviousError(t *testing.T) {
+	task := GenerationTaskRecord{
+		ID:      "generation_1",
+		Status:  "failed",
+		Message: "Generation request failed.",
+		Error:   "previous failure",
+	}
+
+	nextTask := GenerationTaskWithMessage(
+		task,
+		SubmittedGenerationResponse(task.ID, coregeneration.KindImage),
+	)
+
+	if nextTask.Status != "submitted" {
+		t.Fatalf("status = %q, want submitted", nextTask.Status)
+	}
+	if nextTask.Error != "" {
+		t.Fatalf("error = %q, want cleared error", nextTask.Error)
+	}
+	if !strings.Contains(nextTask.Message, "正在服务器上运行") {
+		t.Fatalf("message = %q, want server-side running message", nextTask.Message)
+	}
+}
+
+func TestListGenerationTasksUsesScopeDefaultConversation(t *testing.T) {
+	repo, err := newTestGenerationTaskRepository(t, filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	store := NewGenerationTaskServiceFromRepository(repo, nil, nil)
+	workflow := NewGenerationService(nil, store, nil)
+	kind := string(coregeneration.KindImage)
+
+	conversation, status, err := workflow.resolveGenerationConversation("", "section-a", kind)
+	if err != nil || status != 200 {
+		t.Fatalf("resolveGenerationConversation() status = %d error = %v", status, err)
+	}
+	if conversation.ID != DefaultGenerationConversationID("section-a", kind) {
+		t.Fatalf("default conversation id = %q, want scoped default", conversation.ID)
+	}
+
+	tasks := []GenerationTaskRecord{
+		{
+			ID:             "generation-section-a",
+			ConversationID: DefaultGenerationConversationID("section-a", kind),
+			Kind:           kind,
+			RouteID:        coregeneration.RouteDMXSeedream5Lite,
+			FamilyID:       coregeneration.FamilySeedream,
+			VersionID:      coregeneration.VersionSeedream5Lite,
+			Provider:       coregeneration.ProviderDMX,
+			Model:          "seedream-5.0-lite",
+			Prompt:         "section a prompt",
+			Status:         "completed",
+			Message:        "done",
+		},
+		{
+			ID:             "generation-section-b",
+			ConversationID: DefaultGenerationConversationID("section-b", kind),
+			Kind:           kind,
+			RouteID:        coregeneration.RouteDMXSeedream5Lite,
+			FamilyID:       coregeneration.FamilySeedream,
+			VersionID:      coregeneration.VersionSeedream5Lite,
+			Provider:       coregeneration.ProviderDMX,
+			Model:          "seedream-5.0-lite",
+			Prompt:         "section b prompt",
+			Status:         "completed",
+			Message:        "done",
+		},
+	}
+	for _, task := range tasks {
+		if err := store.Upsert(task); err != nil {
+			t.Fatalf("Upsert(%s) error = %v", task.ID, err)
+		}
+	}
+
+	response, err := workflow.ListGenerationTasks(GenerationTaskListQuery{
+		Kind:    kind,
+		ScopeID: "section-a",
+	})
+	if err != nil {
+		t.Fatalf("ListGenerationTasks(section-a) error = %v", err)
+	}
+	if got := generationTaskIDs(response.Tasks); !sameStringSet(got, []string{"generation-section-a"}) {
+		t.Fatalf("section-a tasks = %v, want only generation-section-a", got)
+	}
+}
+
+func TestListGenerationTasksTreatsUnknownSessionAsScope(t *testing.T) {
+	repo, err := newTestGenerationTaskRepository(t, filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	store := NewGenerationTaskServiceFromRepository(repo, nil, nil)
+	workflow := NewGenerationService(nil, store, nil)
+	kind := string(coregeneration.KindImage)
+
+	// v1 路由把 sessionId 透传为 ConversationID；未命中已命名会话时应回退到该 scope 的默认会话。
+	conversation, status, err := workflow.resolveGenerationConversationWithScopeFilter("section-a", "", kind, false)
+	if err != nil || status != 200 {
+		t.Fatalf("resolveGenerationConversationWithScopeFilter() status = %d error = %v", status, err)
+	}
+	if conversation.ID != DefaultGenerationConversationID("section-a", kind) {
+		t.Fatalf("conversation id = %q, want scoped default", conversation.ID)
+	}
+	if conversation.ScopeID != "section-a" {
+		t.Fatalf("conversation scope = %q, want section-a", conversation.ScopeID)
+	}
+
+	tasks := []GenerationTaskRecord{
+		{
+			ID:             "generation-section-a",
+			ConversationID: DefaultGenerationConversationID("section-a", kind),
+			Kind:           kind,
+			RouteID:        coregeneration.RouteDMXSeedream5Lite,
+			FamilyID:       coregeneration.FamilySeedream,
+			VersionID:      coregeneration.VersionSeedream5Lite,
+			Provider:       coregeneration.ProviderDMX,
+			Model:          "seedream-5.0-lite",
+			Prompt:         "section a prompt",
+			Status:         "completed",
+			Message:        "done",
+		},
+		{
+			ID:             "generation-section-b",
+			ConversationID: DefaultGenerationConversationID("section-b", kind),
+			Kind:           kind,
+			RouteID:        coregeneration.RouteDMXSeedream5Lite,
+			FamilyID:       coregeneration.FamilySeedream,
+			VersionID:      coregeneration.VersionSeedream5Lite,
+			Provider:       coregeneration.ProviderDMX,
+			Model:          "seedream-5.0-lite",
+			Prompt:         "section b prompt",
+			Status:         "completed",
+			Message:        "done",
+		},
+	}
+	for _, task := range tasks {
+		if err := store.Upsert(task); err != nil {
+			t.Fatalf("Upsert(%s) error = %v", task.ID, err)
+		}
+	}
+
+	response, err := workflow.ListGenerationTasks(GenerationTaskListQuery{
+		Kind:           kind,
+		ConversationID: "section-a",
+	})
+	if err != nil {
+		t.Fatalf("ListGenerationTasks(session section-a) error = %v", err)
+	}
+	if got := generationTaskIDs(response.Tasks); !sameStringSet(got, []string{"generation-section-a"}) {
+		t.Fatalf("session section-a tasks = %v, want only generation-section-a", got)
+	}
+}
+
+func TestCreateVideoGenerationSubmitsProviderTaskInBackground(t *testing.T) {
+	repo, err := newTestGenerationTaskRepository(t, filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	store := NewGenerationTaskServiceFromRepository(repo, nil, nil)
+	settingsSvc := settings.NewSettings(&generationTestAPIKeyStore{
+		values: map[string]string{
+			coregeneration.ProviderDMX: "sk-video",
+		},
+	})
+	provider := &blockingVideoGenerateProvider{
+		started:  make(chan struct{}),
+		release:  make(chan struct{}),
+		response: coregeneration.Response{ID: "dmx.seedance-2.0-fast:cgt-background", Status: "submitted"},
+	}
+	workflow := NewGenerationService(settingsSvc, store, nil)
+	workflow.generationProviderFactory = func(route coregeneration.ModelRoute) (coregeneration.Provider, error) {
+		if route.ID != coregeneration.RouteDMXSeedance20Fast {
+			t.Fatalf("route = %q, want seedance video route", route.ID)
+		}
+		return provider, nil
+	}
+
+	requestCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	response, status, err := workflow.CreateGenerationMessage(requestCtx, GenerationMessageRequest{
+		Kind:    string(coregeneration.KindVideo),
+		RouteID: coregeneration.RouteDMXSeedance20Fast,
+		ModelID: coregeneration.ModelJimengSeedance2Fast,
+		Model:   "doubao-seedance-2-0-fast-260128",
+		Prompt:  "make a short flower field video",
+		Params: map[string]any{
+			"duration":   "5",
+			"ratio":      "16:9",
+			"resolution": "720p",
+		},
+	})
+	if err != nil || status != 200 {
+		t.Fatalf("CreateGenerationMessage() status = %d error = %v", status, err)
+	}
+	if response.Status != "submitting" {
+		t.Fatalf("response status = %q, want submitting", response.Status)
+	}
+	if strings.Contains(response.ID, ":") {
+		t.Fatalf("response id = %q, want local task id", response.ID)
+	}
+
+	select {
+	case <-provider.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("provider submission did not start")
+	}
+	task, ok, err := store.Get(response.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !ok || task.Status != "submitting" || task.ProviderTaskID != "" {
+		t.Fatalf("task = %+v, want local submitting task without provider id", task)
+	}
+
+	close(provider.release)
+	task = waitForGenerationTask(t, store, response.ID, func(task GenerationTaskRecord) bool {
+		return task.ProviderTaskID == "dmx.seedance-2.0-fast:cgt-background"
+	})
+	if task.Status != "submitted" {
+		t.Fatalf("task status = %q, want submitted", task.Status)
+	}
+	if provider.request == nil || provider.request.Prompt != "make a short flower field video" {
+		t.Fatalf("provider request = %+v, want submitted prompt", provider.request)
+	}
+}
+
+func TestCreateJimengSeedanceQueuesWhenActiveTaskExists(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "settings.db")
+	repo, err := newTestGenerationTaskRepository(t, dbPath)
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	store := NewGenerationTaskServiceFromRepository(repo, nil, nil)
+	settingsSvc := settings.NewSettings(&generationTestAPIKeyStore{
+		values: map[string]string{
+			coregeneration.ProviderJimeng: "logged-in",
+		},
+	})
+	active := jimengSeedanceVideoTaskRecord("generation-active", coregeneration.RouteJimengSeedance20Fast, "submitted")
+	active.ProviderTaskID = coregeneration.RouteJimengSeedance20Fast + ":video-active"
+	if err := store.Upsert(active); err != nil {
+		t.Fatalf("Upsert(active) error = %v", err)
+	}
+
+	provider := &blockingVideoGenerateProvider{
+		started:  make(chan struct{}),
+		release:  make(chan struct{}),
+		response: coregeneration.Response{ID: coregeneration.RouteJimengSeedance20 + ":video-next", Status: "submitted"},
+	}
+	workflow := NewGenerationService(settingsSvc, store, nil)
+	workflow.generationProviderFactory = func(route coregeneration.ModelRoute) (coregeneration.Provider, error) {
+		if route.ID != coregeneration.RouteJimengSeedance20 {
+			t.Fatalf("route = %q, want jimeng seedance 2.0 route", route.ID)
+		}
+		return provider, nil
+	}
+
+	response, status, err := workflow.CreateGenerationMessage(context.Background(), GenerationMessageRequest{
+		Kind:    string(coregeneration.KindVideo),
+		RouteID: coregeneration.RouteJimengSeedance20,
+		Prompt:  "next queued clip",
+		Params: map[string]any{
+			"duration":   "5",
+			"ratio":      "16:9",
+			"resolution": "720p",
+		},
+	})
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("CreateGenerationMessage() status = %d error = %v", status, err)
+	}
+	if response.Status != "queued" {
+		t.Fatalf("response status = %q, want queued", response.Status)
+	}
+	task, ok, err := store.Get(response.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !ok || task.Status != "queued" || task.ProviderTaskID != "" {
+		t.Fatalf("task = %+v, want queued local task without provider id", task)
+	}
+	select {
+	case <-provider.started:
+		t.Fatal("provider should not be called while the jimeng Seedance queue is blocked")
+	default:
+	}
+}
+
+func TestCreateJimengSeedanceMiniAndVIPRoutesBypassQueue(t *testing.T) {
+	routeIDs := []string{
+		coregeneration.RouteJimengSeedance20Mini,
+		coregeneration.RouteJimengSeedance20FastVIP,
+		coregeneration.RouteJimengSeedance20VIP,
+	}
+	for _, routeID := range routeIDs {
+		t.Run(routeID, func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), "settings.db")
+			repo, err := newTestGenerationTaskRepository(t, dbPath)
+			if err != nil {
+				t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+			}
+			store := NewGenerationTaskServiceFromRepository(repo, nil, nil)
+			settingsSvc := settings.NewSettings(&generationTestAPIKeyStore{
+				values: map[string]string{
+					coregeneration.ProviderJimeng: "logged-in",
+				},
+			})
+			active := jimengSeedanceVideoTaskRecord("generation-active", coregeneration.RouteJimengSeedance20Fast, "submitted")
+			active.ProviderTaskID = coregeneration.RouteJimengSeedance20Fast + ":video-active"
+			if err := store.Upsert(active); err != nil {
+				t.Fatalf("Upsert(active) error = %v", err)
+			}
+
+			provider := &blockingVideoGenerateProvider{
+				started:  make(chan struct{}),
+				release:  make(chan struct{}),
+				response: coregeneration.Response{ID: routeID + ":video-direct", Status: "submitted"},
+			}
+			workflow := NewGenerationService(settingsSvc, store, nil)
+			workflow.generationProviderFactory = func(route coregeneration.ModelRoute) (coregeneration.Provider, error) {
+				if route.ID != routeID {
+					t.Fatalf("route = %q, want %q", route.ID, routeID)
+				}
+				return provider, nil
+			}
+
+			response, status, err := workflow.CreateGenerationMessage(context.Background(), GenerationMessageRequest{
+				Kind:    string(coregeneration.KindVideo),
+				RouteID: routeID,
+				Prompt:  "direct premium clip",
+				Params: map[string]any{
+					"duration":   "5",
+					"ratio":      "16:9",
+					"resolution": "720p",
+				},
+			})
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("CreateGenerationMessage() status = %d error = %v", status, err)
+			}
+			if response.Status != "submitting" {
+				t.Fatalf("response status = %q, want submitting", response.Status)
+			}
+			select {
+			case <-provider.started:
+			case <-time.After(2 * time.Second):
+				t.Fatal("provider submission did not start")
+			}
+			close(provider.release)
+			task := waitForGenerationTask(t, store, response.ID, func(task GenerationTaskRecord) bool {
+				return task.ProviderTaskID == routeID+":video-direct"
+			})
+			if task.Status != "submitted" {
+				t.Fatalf("task status = %q, want submitted", task.Status)
+			}
+		})
+	}
+}
+
+func TestCreateImageGenerationRejectsReferenceURLsBeyondRouteLimitBeforeTask(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "settings.db")
+	repo, err := newTestGenerationTaskRepository(t, dbPath)
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	store := NewGenerationTaskServiceFromRepository(repo, nil, nil)
+	settingsSvc := settings.NewSettings(&generationTestAPIKeyStore{
+		values: map[string]string{
+			coregeneration.ProviderDMX: "sk-image",
+		},
+	})
+	workflow := NewGenerationService(settingsSvc, store, nil)
+	providerFactoryCalled := false
+	workflow.generationProviderFactory = func(route coregeneration.ModelRoute) (coregeneration.Provider, error) {
+		providerFactoryCalled = true
+		return &blockingMultiAssetImageGenerateProvider{
+			started: make(chan coregeneration.Request, 1),
+			release: make(chan struct{}),
+		}, nil
+	}
+
+	_, status, err := workflow.CreateGenerationMessage(context.Background(), GenerationMessageRequest{
+		Kind:    string(coregeneration.KindImage),
+		RouteID: coregeneration.RouteDMXGPTImage2,
+		ModelID: coregeneration.ModelGPTImage2,
+		Model:   "gpt-image-2-ssvip",
+		Prompt:  "make an image with too many references",
+		ReferenceURLs: []string{
+			"https://example.test/reference-1.png",
+			"https://example.test/reference-2.png",
+			"https://example.test/reference-3.png",
+			"https://example.test/reference-4.png",
+			"https://example.test/reference-5.png",
+		},
+		Params: map[string]any{
+			"aspectRatio": "1:1",
+			"resolution":  "1K",
+		},
+	})
+	if err == nil || status != http.StatusBadRequest {
+		t.Fatalf("CreateGenerationMessage() status = %d error = %v, want bad request", status, err)
+	}
+	if !strings.Contains(err.Error(), "supports at most 4 reference URLs") {
+		t.Fatalf("error = %q, want reference limit error", err)
+	}
+	if providerFactoryCalled {
+		t.Fatal("provider factory was called before request validation")
+	}
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("task count = %d, want no persisted failed task", len(tasks))
+	}
+}
+
+func TestPollQueuedJimengSeedanceSubmitsOldestWhenUnblocked(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "settings.db")
+	repo, err := newTestGenerationTaskRepository(t, dbPath)
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	store := NewGenerationTaskServiceFromRepository(repo, nil, nil)
+	settingsSvc := settings.NewSettings(&generationTestAPIKeyStore{
+		values: map[string]string{
+			coregeneration.ProviderJimeng: "logged-in",
+		},
+	})
+	first := jimengSeedanceVideoTaskRecord("generation-queued-1", coregeneration.RouteJimengSeedance20Fast, "queued")
+	second := jimengSeedanceVideoTaskRecord("generation-queued-2", coregeneration.RouteJimengSeedance20, "queued")
+	if err := store.Upsert(first); err != nil {
+		t.Fatalf("Upsert(first) error = %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if err := store.Upsert(second); err != nil {
+		t.Fatalf("Upsert(second) error = %v", err)
+	}
+
+	provider := &blockingVideoGenerateProvider{
+		started:  make(chan struct{}),
+		release:  make(chan struct{}),
+		response: coregeneration.Response{ID: coregeneration.RouteJimengSeedance20Fast + ":video-queued-1", Status: "submitted"},
+	}
+	workflow := NewGenerationService(settingsSvc, store, nil)
+	workflow.generationProviderFactory = func(coregeneration.ModelRoute) (coregeneration.Provider, error) {
+		return provider, nil
+	}
+
+	task, ok, err := store.Get(second.ID)
+	if err != nil || !ok {
+		t.Fatalf("Get(second) ok = %v error = %v", ok, err)
+	}
+	workflow.PollGenerationTask(context.Background(), task)
+	select {
+	case <-provider.started:
+		t.Fatal("second queued task should not submit before the older queued task")
+	default:
+	}
+	task, ok, err = store.Get(second.ID)
+	if err != nil {
+		t.Fatalf("Get(second after poll) error = %v", err)
+	}
+	if !ok || task.Status != "queued" {
+		t.Fatalf("second task = %+v, want still queued", task)
+	}
+
+	task, ok, err = store.Get(first.ID)
+	if err != nil || !ok {
+		t.Fatalf("Get(first) ok = %v error = %v", ok, err)
+	}
+	done := make(chan struct{})
+	go func() {
+		workflow.PollGenerationTask(context.Background(), task)
+		close(done)
+	}()
+	select {
+	case <-provider.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("oldest queued task was not submitted")
+	}
+	close(provider.release)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued submission did not finish")
+	}
+
+	submitted, ok, err := store.Get(first.ID)
+	if err != nil {
+		t.Fatalf("Get(first after submit) error = %v", err)
+	}
+	if !ok || submitted.Status != "submitted" ||
+		submitted.ProviderTaskID != coregeneration.RouteJimengSeedance20Fast+":video-queued-1" {
+		t.Fatalf("first task = %+v, want submitted provider task", submitted)
+	}
+}
+
+func TestCreateJimengImageGenerationPersistsOneTaskForRequestedCount(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "settings.db")
+	repo, err := newTestGenerationTaskRepository(t, dbPath)
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	store := NewGenerationTaskServiceFromRepository(repo, nil, nil)
+	settingsSvc := settings.NewSettings(&generationTestAPIKeyStore{
+		values: map[string]string{
+			coregeneration.ProviderJimeng: "logged-in",
+		},
+	})
+	provider := &blockingMultiAssetImageGenerateProvider{
+		started: make(chan coregeneration.Request, 3),
+		release: make(chan struct{}),
+	}
+	mediaAssets := newTestMediaAssets(t, dbPath, t.TempDir())
+	workflow := NewGenerationService(settingsSvc, store, mediaAssets)
+	workflow.generationProviderFactory = func(route coregeneration.ModelRoute) (coregeneration.Provider, error) {
+		if route.ID != coregeneration.RouteJimengSeedream50 {
+			t.Fatalf("route = %q, want jimeng seedream route", route.ID)
+		}
+		return provider, nil
+	}
+
+	response, status, err := workflow.CreateGenerationMessage(context.Background(), GenerationMessageRequest{
+		Kind:    string(coregeneration.KindImage),
+		RouteID: coregeneration.RouteJimengSeedream50,
+		ModelID: coregeneration.ModelSeedream50,
+		Model:   "5.0",
+		Prompt:  "生成三张同主题角色图",
+		Params: map[string]any{
+			"aspectRatio": "1:1",
+			"resolution":  "2K",
+			"n":           3,
+		},
+	})
+	if err != nil || status != 200 {
+		t.Fatalf("CreateGenerationMessage() status = %d error = %v", status, err)
+	}
+	if response.Status != "submitted" {
+		t.Fatalf("response status = %q, want submitted", response.Status)
+	}
+
+	var request coregeneration.Request
+	select {
+	case request = <-provider.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("provider request did not start")
+	}
+	if request.Prompt != "生成三张同主题角色图" {
+		t.Fatalf("provider prompt = %q", request.Prompt)
+	}
+	if request.Params["n"] != 3 {
+		t.Fatalf("provider request params = %#v, want n=3 on the single request", request.Params)
+	}
+	task := waitForGenerationTask(t, store, response.ID, func(task GenerationTaskRecord) bool {
+		return task.Status == "running" || task.Status == "submitted"
+	})
+	if task.RouteID != coregeneration.RouteJimengSeedream50 || task.Provider != coregeneration.ProviderJimeng {
+		t.Fatalf("task = %+v, want jimeng seedream task", task)
+	}
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want one history task", len(tasks))
+	}
+	task = waitForGenerationTask(t, store, response.ID, func(task GenerationTaskRecord) bool {
+		return task.Status == "running" && len(task.Assets) == 2
+	})
+	if len(task.Assets) != 2 {
+		t.Fatalf("running task assets = %#v, want two partial generated images", task.Assets)
+	}
+
+	close(provider.release)
+	task = waitForGenerationTask(t, store, response.ID, func(task GenerationTaskRecord) bool {
+		return task.Status == "completed" && len(task.Assets) == 3
+	})
+	if len(task.Assets) != 3 {
+		t.Fatalf("task assets = %#v, want three generated images on one task", task.Assets)
+	}
+}
+
+func TestCreatePromptOptimizedGenerationMessageRecordsOptimizationAndImageTasks(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "settings.db")
+	repo, err := newTestGenerationTaskRepository(t, dbPath)
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	store := NewGenerationTaskServiceFromRepository(repo, nil, nil)
+	settingsSvc := settings.NewSettings(&generationTestAPIKeyStore{
+		values: map[string]string{
+			coregeneration.ProviderDMX: "sk-test",
+		},
+	})
+	imageProvider := &blockingMultiAssetImageGenerateProvider{
+		started: make(chan coregeneration.Request, 1),
+		release: make(chan struct{}),
+	}
+	workflow := NewGenerationService(settingsSvc, store, newTestMediaAssets(t, dbPath, t.TempDir()))
+	var textRequest coregeneration.Request
+	workflow.generationProviderFactory = func(route coregeneration.ModelRoute) (coregeneration.Provider, error) {
+		switch route.ID {
+		case coregeneration.RouteDMXGPT41MiniText:
+			return fakeTextStreamProvider{
+				request: &textRequest,
+				events: []coregeneration.TextStreamEvent{
+					{Delta: "optimized "},
+					{Delta: "prompt"},
+					{Done: true},
+				},
+			}, nil
+		case coregeneration.RouteDMXGPTImage2:
+			return imageProvider, nil
+		default:
+			t.Fatalf("route = %q, want prompt optimization text or image route", route.ID)
+			return nil, fmt.Errorf("unexpected route")
+		}
+	}
+
+	imageRoute, ok := coregeneration.FindRoute(coregeneration.RouteDMXGPTImage2)
+	if !ok {
+		t.Fatal("dmx gpt image route is missing")
+	}
+	response, status, err := workflow.CreatePromptOptimizedGenerationMessage(context.Background(), GenerationMessageRequest{
+		Kind:    string(coregeneration.KindImage),
+		RouteID: imageRoute.ID,
+		ModelID: imageRoute.LegacyModelID,
+		Model:   imageRoute.Model,
+		Prompt:  "原始角色提示词",
+		SourceRefs: []ContentSourceRef{{
+			PackageID: "marketplace.style-pack",
+			ReleaseID: "release-1",
+		}},
+		PromptOptimization: &GenerationPromptOptimizationRequest{
+			ConversationID:  "prompt-optimize-session",
+			RouteID:         coregeneration.RouteDMXGPT41MiniText,
+			Model:           "text-model",
+			ReferenceName:   "电影质感",
+			ReferencePrompt: "cinematic lighting, detailed composition",
+		},
+		Params: map[string]any{"n": 1},
+	})
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("CreatePromptOptimizedGenerationMessage() status = %d error = %v", status, err)
+	}
+	if response.Optimization.Status != "completed" || response.OptimizedPrompt != "optimized prompt" {
+		t.Fatalf("optimization response = %+v, optimizedPrompt = %q; want completed optimized prompt", response.Optimization, response.OptimizedPrompt)
+	}
+	if response.Generation.Status != "submitted" {
+		t.Fatalf("generation response = %+v, want submitted image generation", response.Generation)
+	}
+
+	var imageRequest coregeneration.Request
+	select {
+	case imageRequest = <-imageProvider.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("image provider request did not start")
+	}
+	if imageRequest.Prompt != "optimized prompt" {
+		t.Fatalf("image prompt = %q, want optimized prompt", imageRequest.Prompt)
+	}
+	if !strings.Contains(textRequest.Prompt, "优化 prompt：\ncinematic lighting, detailed composition") ||
+		!strings.Contains(textRequest.Prompt, "用户的输入：\n原始角色提示词") ||
+		!strings.Contains(textRequest.Prompt, "请按“优化 prompt”的风格和质量要求改写“用户的输入”") ||
+		!strings.Contains(textRequest.Prompt, "只输出优化后的提示词正文") ||
+		strings.Contains(textRequest.Prompt, "输出要求") ||
+		strings.Contains(textRequest.Prompt, "赛璐珞") {
+		t.Fatalf("text prompt = %q, want concise style-agnostic optimization prompt", textRequest.Prompt)
+	}
+
+	optimizationTask, ok, err := store.Get(response.Optimization.ID)
+	if err != nil {
+		t.Fatalf("Get(optimization) error = %v", err)
+	}
+	if !ok ||
+		optimizationTask.Kind != string(coregeneration.KindText) ||
+		optimizationTask.Text != "optimized prompt" ||
+		optimizationTask.ConversationID != "prompt-optimize-session" {
+		t.Fatalf("optimization task = %+v, want persisted text task", optimizationTask)
+	}
+	optimizationConversation, ok, err := store.GetConversation("prompt-optimize-session")
+	if err != nil {
+		t.Fatalf("GetConversation(optimization) error = %v", err)
+	}
+	if !ok || optimizationConversation.Title != "项目 · 提示词生成" {
+		t.Fatalf("optimization conversation = %+v, want project prompt generation title", optimizationConversation)
+	}
+	imageTask, ok, err := store.Get(response.Generation.ID)
+	if err != nil {
+		t.Fatalf("Get(generation) error = %v", err)
+	}
+	if !ok || imageTask.Kind != string(coregeneration.KindImage) || imageTask.Prompt != "optimized prompt" {
+		t.Fatalf("image task = %+v, want persisted image task using optimized prompt", imageTask)
+	}
+
+	close(imageProvider.release)
+	waitForGenerationTask(t, store, response.Generation.ID, func(task GenerationTaskRecord) bool {
+		return task.Status == "completed" && len(task.Assets) == 3
+	})
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(tasks) != 2 {
+		t.Fatalf("task count = %d, want optimization and image generation tasks", len(tasks))
+	}
+	kinds := map[string]bool{}
+	for _, task := range tasks {
+		kinds[task.Kind] = true
+	}
+	if !kinds[string(coregeneration.KindText)] || !kinds[string(coregeneration.KindImage)] {
+		t.Fatalf("task kinds = %#v, want text and image records", kinds)
+	}
+}
+
+func TestCreatePromptOptimizedGenerationMessageUsesCodexWithoutTextRoute(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "settings.db")
+	repo, err := newTestGenerationTaskRepository(t, dbPath)
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	store := NewGenerationTaskServiceFromRepository(repo, nil, nil)
+	settingsSvc := settings.NewSettings(&generationTestAPIKeyStore{
+		values: map[string]string{coregeneration.ProviderDMX: "sk-test"},
+	})
+	imageProvider := &blockingMultiAssetImageGenerateProvider{
+		started: make(chan coregeneration.Request, 1),
+		release: make(chan struct{}),
+	}
+	workflow := NewGenerationService(settingsSvc, store, newTestMediaAssets(t, dbPath, t.TempDir()))
+	workflow.generationProviderFactory = func(route coregeneration.ModelRoute) (coregeneration.Provider, error) {
+		if route.ID != coregeneration.RouteDMXGPTImage2 {
+			t.Fatalf("route = %q, want image route only", route.ID)
+		}
+		return imageProvider, nil
+	}
+	var codexRequest textcompletion.Request
+	workflow.SetCodexTextBackend(
+		textcompletion.BackendFunc(func(_ context.Context, request textcompletion.Request) (textcompletion.Result, error) {
+			codexRequest = request
+			return textcompletion.Result{
+				Text:     "codex optimized prompt",
+				Executor: textcompletion.ExecutorCodex,
+				Model:    "codex",
+			}, nil
+		}),
+		func(context.Context, textcompletion.Request) bool { return true },
+	)
+
+	imageRoute, ok := coregeneration.FindRoute(coregeneration.RouteDMXGPTImage2)
+	if !ok {
+		t.Fatal("dmx gpt image route is missing")
+	}
+	response, status, err := workflow.CreatePromptOptimizedGenerationMessage(context.Background(), GenerationMessageRequest{
+		Kind:    string(coregeneration.KindImage),
+		RouteID: imageRoute.ID,
+		ModelID: imageRoute.LegacyModelID,
+		Model:   imageRoute.Model,
+		Prompt:  "原始角色提示词",
+		PromptOptimization: &GenerationPromptOptimizationRequest{
+			Executor:        string(textcompletion.ExecutorCodex),
+			ReferenceName:   "电影质感",
+			ReferencePrompt: "cinematic lighting",
+		},
+		Params: map[string]any{"n": 1},
+	})
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("CreatePromptOptimizedGenerationMessage() status = %d error = %v", status, err)
+	}
+	if response.OptimizedPrompt != "codex optimized prompt" || response.Optimization.Status != "completed" {
+		t.Fatalf("response = %+v, want completed Codex optimization", response)
+	}
+	if codexRequest.Executor != textcompletion.ExecutorCodex ||
+		codexRequest.SystemInstruction != promptOptimizationSystemInstructionText ||
+		!strings.Contains(codexRequest.Prompt, "原始角色提示词") {
+		t.Fatalf("codex request = %#v", codexRequest)
+	}
+
+	select {
+	case imageRequest := <-imageProvider.started:
+		if imageRequest.Prompt != "codex optimized prompt" {
+			t.Fatalf("image prompt = %q, want Codex optimized prompt", imageRequest.Prompt)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("image provider request did not start")
+	}
+	close(imageProvider.release)
+	waitForGenerationTask(t, store, response.Generation.ID, func(task GenerationTaskRecord) bool {
+		return task.Status == "completed"
+	})
+}
+
+func TestPromptOptimizationConversationTitle(t *testing.T) {
+	tests := []struct {
+		name      string
+		projectID string
+		want      string
+	}{
+		{
+			name:      "project scoped",
+			projectID: "舔狗金",
+			want:      "舔狗金 · 提示词生成",
+		},
+		{
+			name: "fallback",
+			want: "项目 · 提示词生成",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := promptOptimizationConversationTitle(test.projectID); got != test.want {
+				t.Fatalf("promptOptimizationConversationTitle(%q) = %q, want %q", test.projectID, got, test.want)
+			}
+		})
+	}
+}
+
+func TestCleanPromptOptimizationOutput(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{
+			name:  "strips thinking label and code fence",
+			value: "<think>先分析用户输入。</think>\n\n优化后的提示词：\n```text\n电影感城市夜景，雨后路面反光，细节丰富\n```",
+			want:  "电影感城市夜景，雨后路面反光，细节丰富",
+		},
+		{
+			name:  "strips markdown label",
+			value: "**优化后提示词：** 高质量角色设定，服饰清晰，镜头一致",
+			want:  "高质量角色设定，服饰清晰，镜头一致",
+		},
+		{
+			name:  "keeps plain prompt",
+			value: "纯正2D日系动漫插画，线条流畅，色彩鲜艳",
+			want:  "纯正2D日系动漫插画，线条流畅，色彩鲜艳",
+		},
+		{
+			name:  "strips unterminated streaming code fence",
+			value: "```text\n电影感城市夜景，雨后路面反光",
+			want:  "电影感城市夜景，雨后路面反光",
+		},
+		{
+			name:  "hides partial fence header while streaming",
+			value: "```te",
+			want:  "",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := cleanPromptOptimizationOutput(test.value); got != test.want {
+				t.Fatalf("cleanPromptOptimizationOutput() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestCreateJimengImageDocumentContextDoesNotUseCurrentSectionImagesAsReferences(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "settings.db")
+	repo, err := newTestGenerationTaskRepository(t, dbPath)
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	store := NewGenerationTaskServiceFromRepository(repo, nil, nil)
+	settingsSvc := settings.NewSettings(&generationTestAPIKeyStore{
+		values: map[string]string{
+			coregeneration.ProviderJimeng: "logged-in",
+		},
+	})
+	provider := &blockingMultiAssetImageGenerateProvider{
+		started: make(chan coregeneration.Request, 1),
+		release: make(chan struct{}),
+	}
+	workflow := NewGenerationService(settingsSvc, store, newTestMediaAssets(t, dbPath, t.TempDir()))
+	workflow.SetDocumentResolver(fakeGenerationDocumentResolver{
+		documents: map[string]mediamcp.WorkspaceDocument{
+			"story-doc": {
+				ID: "story-doc",
+				Content: strings.Join([]string{
+					"# 第一集",
+					"",
+					"<!-- section-id: section_chenyuan -->",
+					"## 陈远",
+					"",
+					"![已有插图](/api/v1/media-assets/existing-image/content)",
+					"",
+					"形象定位：21岁男性大三学生。",
+				}, "\n"),
+			},
+		},
+	})
+	workflow.generationProviderFactory = func(route coregeneration.ModelRoute) (coregeneration.Provider, error) {
+		if route.ID != coregeneration.RouteJimengSeedream50 {
+			t.Fatalf("route = %q, want jimeng seedream route", route.ID)
+		}
+		return provider, nil
+	}
+
+	response, status, err := workflow.CreateGenerationMessage(context.Background(), GenerationMessageRequest{
+		Kind:    string(coregeneration.KindImage),
+		RouteID: coregeneration.RouteJimengSeedream50,
+		ModelID: coregeneration.ModelSeedream50,
+		Model:   "5.0",
+		Prompt:  "重新生成角色视觉素材。",
+		DocumentContext: &GenerationDocumentContext{
+			DocumentID: "story-doc",
+			SectionID:  "section_chenyuan",
+		},
+	})
+	if err != nil || status != 200 {
+		t.Fatalf("CreateGenerationMessage() status = %d error = %v", status, err)
+	}
+	if response.Status != "submitted" {
+		t.Fatalf("response status = %q, want submitted", response.Status)
+	}
+
+	var request coregeneration.Request
+	select {
+	case request = <-provider.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("provider request did not start")
+	}
+	if len(request.ReferenceURLs) != 0 {
+		t.Fatalf("provider reference urls = %#v, want none", request.ReferenceURLs)
+	}
+
+	close(provider.release)
+	waitForGenerationTask(t, store, response.ID, func(task GenerationTaskRecord) bool {
+		return task.Status == "completed"
+	})
+}
+
+func TestCreateJimengImageGenerationPreservesPartialAssetsOnFailure(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "settings.db")
+	repo, err := newTestGenerationTaskRepository(t, dbPath)
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	store := NewGenerationTaskServiceFromRepository(repo, nil, nil)
+	settingsSvc := settings.NewSettings(&generationTestAPIKeyStore{
+		values: map[string]string{
+			coregeneration.ProviderJimeng: "logged-in",
+		},
+	})
+	provider := &blockingMultiAssetImageGenerateProvider{
+		started: make(chan coregeneration.Request, 3),
+		release: make(chan struct{}),
+		err:     fmt.Errorf("third image failed"),
+	}
+	mediaAssets := newTestMediaAssets(t, dbPath, t.TempDir())
+	workflow := NewGenerationService(settingsSvc, store, mediaAssets)
+	workflow.generationProviderFactory = func(route coregeneration.ModelRoute) (coregeneration.Provider, error) {
+		return provider, nil
+	}
+
+	response, status, err := workflow.CreateGenerationMessage(context.Background(), GenerationMessageRequest{
+		Kind:    string(coregeneration.KindImage),
+		RouteID: coregeneration.RouteJimengSeedream50,
+		ModelID: coregeneration.ModelSeedream50,
+		Model:   "5.0",
+		Prompt:  "生成三张同主题角色图",
+		Params:  map[string]any{"n": 3},
+	})
+	if err != nil || status != 200 {
+		t.Fatalf("CreateGenerationMessage() status = %d error = %v", status, err)
+	}
+
+	select {
+	case <-provider.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("provider request did not start")
+	}
+	waitForGenerationTask(t, store, response.ID, func(task GenerationTaskRecord) bool {
+		return task.Status == "running" && len(task.Assets) == 2
+	})
+
+	close(provider.release)
+	task := waitForGenerationTask(t, store, response.ID, func(task GenerationTaskRecord) bool {
+		return task.Status == "failed" && len(task.Assets) == 2
+	})
+	if len(task.Assets) != 2 {
+		t.Fatalf("failed task assets = %#v, want partial generated images preserved", task.Assets)
+	}
+}
+
+func TestGetGenerationVideoPollsProviderTaskID(t *testing.T) {
+	repo, err := newTestGenerationTaskRepository(t, filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	store := NewGenerationTaskServiceFromRepository(repo, nil, nil)
+	settingsSvc := settings.NewSettings(&generationTestAPIKeyStore{
+		values: map[string]string{
+			coregeneration.ProviderDMX: "sk-video",
+		},
+	})
+	provider := &recordingVideoProvider{
+		response: coregeneration.Response{
+			ID:     "dmx.seedance-2.0-fast:cgt-provider",
+			Status: "completed",
+			Assets: []coregeneration.Asset{{
+				Kind: coregeneration.KindVideo,
+				URL:  "https://example.com/generated.mp4",
+			}},
+		},
+	}
+	workflow := NewGenerationService(settingsSvc, store, nil)
+	workflow.generationProviderFactory = func(route coregeneration.ModelRoute) (coregeneration.Provider, error) {
+		if route.ID != coregeneration.RouteDMXSeedance20Fast {
+			t.Fatalf("route = %q, want seedance video route", route.ID)
+		}
+		return provider, nil
+	}
+
+	if err := store.Upsert(GenerationTaskRecord{
+		ID:             "generation-local",
+		ProviderTaskID: "dmx.seedance-2.0-fast:cgt-provider",
+		Kind:           string(coregeneration.KindVideo),
+		RouteID:        coregeneration.RouteDMXSeedance20Fast,
+		FamilyID:       coregeneration.FamilySeedance,
+		VersionID:      coregeneration.VersionSeedance20Fast,
+		Provider:       coregeneration.ProviderDMX,
+		ModelID:        coregeneration.ModelJimengSeedance2Fast,
+		Model:          "doubao-seedance-2-0-fast-260128",
+		Prompt:         "make a video",
+		Status:         "submitted",
+		Message:        "视频生成任务已提交，完成后请再次检查状态。",
+	}); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+
+	response, status, err := workflow.GetGenerationVideo(context.Background(), "generation-local")
+	if err != nil || status != 200 {
+		t.Fatalf("GetGenerationVideo() status = %d error = %v", status, err)
+	}
+	if provider.getID != "dmx.seedance-2.0-fast:cgt-provider" {
+		t.Fatalf("provider get id = %q, want provider task id", provider.getID)
+	}
+	if response.ID != "generation-local" || response.Status != "completed" {
+		t.Fatalf("response = %+v, want local completed response", response)
+	}
+	task, ok, err := store.Get("generation-local")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !ok || task.Status != "completed" || task.ProviderTaskID != "dmx.seedance-2.0-fast:cgt-provider" {
+		t.Fatalf("task = %+v, want completed local task with provider id", task)
+	}
+}
+
+func TestGetGenerationVideoUsesStoredImageKind(t *testing.T) {
+	repo, err := newTestGenerationTaskRepository(t, filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	store := NewGenerationTaskServiceFromRepository(repo, nil, nil)
+	settingsSvc := settings.NewSettings(&generationTestAPIKeyStore{
+		values: map[string]string{coregeneration.ProviderLibTV: "oauth:configured"},
+	})
+	provider := &stubImageProvider{
+		getResponse: coregeneration.Response{
+			ID:     coregeneration.RouteLibTVGPTImage2 + ":project-123:node-empty",
+			Status: "completed",
+		},
+	}
+	workflow := NewGenerationService(settingsSvc, store, nil)
+	workflow.generationProviderFactory = func(route coregeneration.ModelRoute) (coregeneration.Provider, error) {
+		if route.ID != coregeneration.RouteLibTVGPTImage2 {
+			t.Fatalf("route = %q, want LibTV GPT Image 2", route.ID)
+		}
+		return provider, nil
+	}
+
+	task := libTVImageTaskRecord("generation-image-local")
+	task.ProviderTaskID = coregeneration.RouteLibTVGPTImage2 + ":project-123:node-empty"
+	if err := store.Upsert(task); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+
+	response, status, err := workflow.GetGenerationVideo(context.Background(), task.ID)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("GetGenerationVideo() status = %d error = %v", status, err)
+	}
+	if response.Status != "failed" || !strings.Contains(response.Error, "未返回图片素材") {
+		t.Fatalf("response = %+v, want image-specific empty result failure", response)
+	}
+	stored, ok, err := store.Get(task.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !ok || stored.Kind != string(coregeneration.KindImage) || stored.Status != "failed" {
+		t.Fatalf("task = %+v, want failed task retaining image kind", stored)
+	}
+}
+
+func TestGetGenerationVideoCachesRemoteAssetWithTaskAssetTitle(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "settings.db")
+	seedGenerationTaskProject(t, dbPath, "project-alpha")
+	repo, err := newTestGenerationTaskRepository(t, dbPath)
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	store := NewGenerationTaskServiceFromRepository(repo, nil, nil)
+	mediaRepo, err := newTestMediaAssetRepository(t, dbPath)
+	if err != nil {
+		t.Fatalf("NewMediaAssetRepository() error = %v", err)
+	}
+	workspaceRoot := t.TempDir()
+	mediaAssets := media.NewMediaAssetsFromRepository(mediaRepo, filepath.Join(workspaceRoot, "library"), workspaceRoot, nil, nil)
+	settingsSvc := settings.NewSettings(&generationTestAPIKeyStore{
+		values: map[string]string{
+			coregeneration.ProviderDMX: "sk-video",
+		},
+	})
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "video/mp4")
+		_, _ = response.Write([]byte("video-bytes"))
+	}))
+	defer server.Close()
+	remoteURL := server.URL + "/oYHvcbgRRZZwJQjqSegmI9QeVXH5ABACQx.mp4"
+	legacyAsset, err := mediaAssets.SaveRemoteAssetWithOptions(
+		context.Background(),
+		media.MediaKindVideo,
+		remoteURL,
+		media.MediaAssetSaveOptions{
+			ProjectID:      "project-alpha",
+			Source:         media.MediaSourceGeneration,
+			ConversationID: "project-alpha-video",
+			SectionID:      "section_reel_01",
+		},
+	)
+	if err != nil {
+		t.Fatalf("SaveRemoteAssetWithOptions(legacy) error = %v", err)
+	}
+	if legacyAsset.Filename != "oYHvcbgRRZZwJQjqSegmI9QeVXH5ABACQx.mp4" {
+		t.Fatalf("legacy filename = %q, want remote basename before title is known", legacyAsset.Filename)
+	}
+	provider := &recordingVideoProvider{
+		response: coregeneration.Response{
+			ID:     "dmx.seedance-2.0-fast:cgt-provider",
+			Status: "completed",
+			Assets: []coregeneration.Asset{{
+				Kind: coregeneration.KindVideo,
+				URL:  remoteURL,
+			}},
+		},
+	}
+	workflow := NewGenerationService(settingsSvc, store, mediaAssets)
+	workflow.generationProviderFactory = func(route coregeneration.ModelRoute) (coregeneration.Provider, error) {
+		return provider, nil
+	}
+
+	const blockTitle = "顾南衣·状态A 落魄寻食少女（十年前·第一幕）"
+	if err := store.Upsert(GenerationTaskRecord{
+		ID:             "generation-local",
+		ProviderTaskID: "dmx.seedance-2.0-fast:cgt-provider",
+		ConversationID: "project-alpha-video",
+		ProjectID:      "project-alpha",
+		DocumentID:     "story-doc",
+		SectionID:      "section_reel_01",
+		Kind:           string(coregeneration.KindVideo),
+		RouteID:        coregeneration.RouteDMXSeedance20Fast,
+		FamilyID:       coregeneration.FamilySeedance,
+		VersionID:      coregeneration.VersionSeedance20Fast,
+		Provider:       coregeneration.ProviderDMX,
+		ModelID:        coregeneration.ModelJimengSeedance2Fast,
+		Model:          "doubao-seedance-2-0-fast-260128",
+		Prompt:         "make a video",
+		Params: map[string]any{
+			generationAssetTitleRequestOption: blockTitle,
+		},
+		Status:  "submitted",
+		Message: "视频生成任务已提交，完成后请再次检查状态。",
+	}); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+
+	response, status, err := workflow.GetGenerationVideo(context.Background(), "generation-local")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("GetGenerationVideo() status = %d error = %v", status, err)
+	}
+	if len(response.Assets) != 1 || response.Assets[0].AssetID == "" {
+		t.Fatalf("response assets = %+v, want cached media asset", response.Assets)
+	}
+
+	task, ok, err := store.Get("generation-local")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !ok || len(task.Assets) != 1 {
+		t.Fatalf("task = %+v, want one cached video asset", task)
+	}
+	expectedFilename := blockTitle + ".mp4"
+	if task.Assets[0].Title != expectedFilename {
+		t.Fatalf("asset title = %q, want %q", task.Assets[0].Title, expectedFilename)
+	}
+	asset, ok, err := mediaAssets.Get(task.Assets[0].AssetID)
+	if err != nil {
+		t.Fatalf("Get(media asset) error = %v", err)
+	}
+	if !ok || asset.ID != legacyAsset.ID || asset.Filename != expectedFilename {
+		t.Fatalf("media asset = %+v, want reused asset renamed to block title", asset)
+	}
+}
+
+func TestGenerationTaskDurationUsesCreatedAndUpdatedAt(t *testing.T) {
+	start := time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)
+	task := GenerationTaskRecord{
+		Status:    "completed",
+		CreatedAt: start.Format(time.RFC3339Nano),
+		UpdatedAt: start.Add(75 * time.Second).Format(time.RFC3339Nano),
+	}
+
+	if got := GenerationTaskDurationMS(task); got != 75000 {
+		t.Fatalf("duration = %d, want 75000", got)
+	}
+}
+
+func waitForGenerationTask(
+	t *testing.T,
+	store *GenerationTaskService,
+	id string,
+	matches func(GenerationTaskRecord) bool,
+) GenerationTaskRecord {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		task, ok, err := store.Get(id)
+		if err != nil {
+			t.Fatalf("Get() error = %v", err)
+		}
+		if ok && matches(task) {
+			return task
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	task, ok, err := store.Get(id)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !ok {
+		t.Fatalf("generation task %q was not found", id)
+	}
+	t.Fatalf("generation task %q did not reach expected state: %+v", id, task)
+	return GenerationTaskRecord{}
+}
+
+func generationTaskIDs(tasks []GenerationTaskRecord) []string {
+	ids := make([]string, 0, len(tasks))
+	for _, task := range tasks {
+		ids = append(ids, task.ID)
+	}
+	return ids
+}
+
+func sameStringSet(left []string, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	counts := make(map[string]int, len(left))
+	for _, value := range left {
+		counts[value]++
+	}
+	for _, value := range right {
+		counts[value]--
+		if counts[value] < 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func TestStreamGenerationTextPersistsFinalText(t *testing.T) {
+	repo, err := newTestGenerationTaskRepository(t, filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	idCounts := map[string]int{}
+	store := NewGenerationTaskServiceFromRepository(repo, nil, func(prefix string) (string, error) {
+		idCounts[prefix]++
+		return prefix + "-test-" + strconv.Itoa(idCounts[prefix]), nil
+	})
+	settingsSvc := settings.NewSettings(&generationTestAPIKeyStore{
+		values: map[string]string{
+			coregeneration.ProviderDMX: "sk-test",
+		},
+	})
+	workflow := NewGenerationService(settingsSvc, store, nil)
+	workflow.generationProviderFactory = func(route coregeneration.ModelRoute) (coregeneration.Provider, error) {
+		if route.ID != coregeneration.RouteDMXGPT41MiniText {
+			t.Fatalf("route = %q, want text route", route.ID)
+		}
+		return fakeTextStreamProvider{
+			events: []coregeneration.TextStreamEvent{
+				{Delta: "hello "},
+				{Delta: "world"},
+				{Usage: &coregeneration.Usage{
+					InputTokens:     1,
+					OutputTokens:    2,
+					TotalTokens:     3,
+					ReasoningTokens: 4,
+					CachedTokens:    5,
+				}, Done: true},
+			},
+		}, nil
+	}
+
+	events := []GenerationTextStreamEvent{}
+	status, err := workflow.StreamGenerationText(context.Background(), GenerationMessageRequest{
+		Kind:    string(coregeneration.KindText),
+		RouteID: coregeneration.RouteDMXGPT41MiniText,
+		Prompt:  "write",
+		SourceRefs: []ContentSourceRef{{
+			PackageID: "marketplace.style-pack",
+			ReleaseID: "release-1",
+		}},
+	}, func(event GenerationTextStreamEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil || status != 200 {
+		t.Fatalf("StreamGenerationText() status = %d error = %v", status, err)
+	}
+	if len(events) != 4 {
+		t.Fatalf("events = %#v, want start, delta, delta, done", events)
+	}
+	if events[0].Type != "start" || events[1].Delta != "hello " || events[2].Delta != "world" || events[3].Type != "done" {
+		t.Fatalf("events = %#v", events)
+	}
+	if events[3].Message == nil || events[3].Message.Text != "hello world" {
+		t.Fatalf("done message = %#v, want final text", events[3].Message)
+	}
+
+	task, ok, err := store.Get(events[0].TaskID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("stream task was not persisted")
+	}
+	if task.Kind != string(coregeneration.KindText) || task.Status != "completed" || task.Text != "hello world" {
+		t.Fatalf("task = %#v", task)
+	}
+	if task.Usage.TotalTokens != 3 || task.Usage.ReasoningTokens != 4 || task.Usage.CachedTokens != 5 {
+		t.Fatalf("usage = %#v", task.Usage)
+	}
+}
+
+func TestStreamGenerationTextCanUseMultimodalRuntimeFactory(t *testing.T) {
+	repo, err := newTestGenerationTaskRepository(t, filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	store := NewGenerationTaskServiceFromRepository(repo, nil, func(prefix string) (string, error) {
+		return prefix + "-multimodal", nil
+	})
+	settingsSvc := settings.NewSettings(&generationTestAPIKeyStore{
+		values: map[string]string{
+			coregeneration.ProviderDMX: "sk-multimodal",
+		},
+	})
+	workflow := NewGenerationService(settingsSvc, store, nil)
+	factoryCredentials := runtime.RouteCredentials{}
+	workflow.multimodalTextProviderFactory = func(
+		_ context.Context,
+		route coregeneration.ModelRoute,
+		credentials runtime.RouteCredentials,
+	) (multimodal.Provider, error) {
+		if route.ID != coregeneration.RouteDMXGPT41MiniText {
+			t.Fatalf("route = %q, want text route", route.ID)
+		}
+		factoryCredentials = credentials
+		return fakeMultimodalStreamProvider{
+			events: []multimodal.StreamEvent{
+				{Type: multimodal.StreamEventMessageDelta, Delta: "multi"},
+				{Type: multimodal.StreamEventMessageDelta, Delta: "modal"},
+				{Type: multimodal.StreamEventDone},
+			},
+		}, nil
+	}
+
+	events := []GenerationTextStreamEvent{}
+	status, err := workflow.StreamGenerationText(context.Background(), GenerationMessageRequest{
+		Kind:    string(coregeneration.KindText),
+		RouteID: coregeneration.RouteDMXGPT41MiniText,
+		Prompt:  "write",
+	}, func(event GenerationTextStreamEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil || status != 200 {
+		t.Fatalf("StreamGenerationText() status = %d error = %v", status, err)
+	}
+	if got := factoryCredentials[coregeneration.ProviderDMX]; got != "sk-multimodal" {
+		t.Fatalf("factory credential = %q, want sk-multimodal", got)
+	}
+	if len(events) != 4 || events[3].Message == nil || events[3].Message.Text != "multimodal" {
+		t.Fatalf("events = %#v, want final multimodal text", events)
+	}
+}
+
+func TestStreamGenerationTextFallsBackToNonStreamingProvider(t *testing.T) {
+	repo, err := newTestGenerationTaskRepository(t, filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	store := NewGenerationTaskServiceFromRepository(repo, nil, func(prefix string) (string, error) {
+		return prefix + "-fallback", nil
+	})
+	settingsSvc := settings.NewSettings(&generationTestAPIKeyStore{
+		values: map[string]string{
+			coregeneration.ProviderDMX: "sk-fallback",
+		},
+	})
+	workflow := NewGenerationService(settingsSvc, store, nil)
+	workflow.generationProviderFactory = func(route coregeneration.ModelRoute) (coregeneration.Provider, error) {
+		if route.ID != coregeneration.RouteDMXGPT41MiniText {
+			t.Fatalf("route = %q, want text route", route.ID)
+		}
+		return fakeUnsupportedTextStreamProvider{
+			response: coregeneration.Response{
+				Text: "fallback text",
+				Usage: coregeneration.Usage{
+					InputTokens:  3,
+					OutputTokens: 4,
+					TotalTokens:  7,
+				},
+			},
+		}, nil
+	}
+
+	events := []GenerationTextStreamEvent{}
+	status, err := workflow.StreamGenerationText(context.Background(), GenerationMessageRequest{
+		Kind:    string(coregeneration.KindText),
+		RouteID: coregeneration.RouteDMXGPT41MiniText,
+		Prompt:  "write",
+	}, func(event GenerationTextStreamEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil || status != 200 {
+		t.Fatalf("StreamGenerationText() status = %d error = %v", status, err)
+	}
+	if len(events) != 2 || events[0].Type != "start" || events[1].Type != "done" {
+		t.Fatalf("events = %#v, want start and done", events)
+	}
+	if events[1].TaskID != "generation-fallback" ||
+		events[1].Message == nil ||
+		events[1].Message.ID != "generation-fallback" ||
+		events[1].Message.Text != "fallback text" {
+		t.Fatalf("done event = %#v, want fallback text with stable task id", events[1])
+	}
+
+	task, ok, err := store.Get("generation-fallback")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !ok || task.Status != "completed" || task.Text != "fallback text" || task.Usage.TotalTokens != 7 {
+		t.Fatalf("task = %#v, want persisted fallback text", task)
+	}
+}
+
+func TestStreamGenerationTextUsesCodexExecutorWithoutConfiguredRoute(t *testing.T) {
+	repo, err := newTestGenerationTaskRepository(t, filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	store := NewGenerationTaskServiceFromRepository(repo, nil, func(prefix string) (string, error) {
+		return prefix + "-codex", nil
+	})
+	workflow := NewGenerationService(
+		settings.NewSettings(&generationTestAPIKeyStore{values: map[string]string{}}),
+		store,
+		nil,
+	)
+	workflow.SetCodexTextBackend(
+		textcompletion.BackendFunc(func(_ context.Context, request textcompletion.Request) (textcompletion.Result, error) {
+			if request.SystemInstruction != "return only text" {
+				t.Fatalf("system instruction = %q", request.SystemInstruction)
+			}
+			if request.Model != "" {
+				t.Fatalf("model = %q, want Codex account default", request.Model)
+			}
+			return textcompletion.Result{Text: "codex optimized", Executor: textcompletion.ExecutorCodex, Model: "codex"}, nil
+		}),
+		func(context.Context, textcompletion.Request) bool { return true },
+	)
+
+	events := []GenerationTextStreamEvent{}
+	status, err := workflow.StreamGenerationText(context.Background(), GenerationMessageRequest{
+		Kind:         string(coregeneration.KindText),
+		TextExecutor: string(textcompletion.ExecutorCodex),
+		Prompt:       "write",
+		Params:       map[string]any{"system_instruction": "return only text"},
+	}, func(event GenerationTextStreamEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("StreamGenerationText() status = %d error = %v", status, err)
+	}
+	if len(events) != 2 || events[0].Type != "start" || events[1].Type != "done" || events[1].Message == nil || events[1].Message.Text != "codex optimized" {
+		t.Fatalf("events = %#v", events)
+	}
+	task, ok, err := store.Get("generation-codex")
+	if err != nil || !ok {
+		t.Fatalf("Get() = %#v, %v", task, err)
+	}
+	if task.RouteID != "codex/text" || task.Provider != "codex" || task.Status != "completed" {
+		t.Fatalf("task = %#v", task)
+	}
+}
+
+func TestStreamGenerationTextRejectsUnknownExecutor(t *testing.T) {
+	workflow := NewGenerationService(nil, nil, nil)
+	status, err := workflow.StreamGenerationText(context.Background(), GenerationMessageRequest{
+		TextExecutor: "unexpected",
+		Prompt:       "write",
+	}, func(GenerationTextStreamEvent) error { return nil })
+	if status != http.StatusBadRequest || err == nil || !strings.Contains(err.Error(), "unknown text executor") {
+		t.Fatalf("StreamGenerationText() status = %d error = %v", status, err)
+	}
+}
+
+func TestCompleteTextUsesConfiguredTextRoute(t *testing.T) {
+	settingsSvc := settings.NewSettings(&generationTestAPIKeyStore{
+		values: map[string]string{
+			"openai": "sk-openai",
+		},
+	})
+	workflow := NewGenerationService(settingsSvc, nil, nil)
+	var captured coregeneration.Request
+	workflow.generationProviderFactory = func(route coregeneration.ModelRoute) (coregeneration.Provider, error) {
+		if route.ID != coregeneration.RouteOfficialGPT55Text {
+			t.Fatalf("route = %q, want official text route", route.ID)
+		}
+		return fakeTextStreamProvider{
+			request: &captured,
+			events: []coregeneration.TextStreamEvent{
+				{Delta: `{"ok":`},
+				{Delta: `true}`},
+				{Done: true},
+			},
+		}, nil
+	}
+
+	text, err := workflow.CompleteText(context.Background(), TextCompletionRequest{
+		Prompt: "extract",
+		Params: map[string]any{"temperature": 0},
+	})
+	if err != nil {
+		t.Fatalf("CompleteText() error = %v", err)
+	}
+	if text != `{"ok":true}` {
+		t.Fatalf("text = %q, want collected stream", text)
+	}
+	if captured.RouteID != coregeneration.RouteOfficialGPT55Text ||
+		captured.Model != "gpt-5.5" ||
+		captured.Params["temperature"] != 0 {
+		t.Fatalf("captured request = %#v", captured)
+	}
+}
+
+func TestCompleteTextFallsBackToNonStreamingProvider(t *testing.T) {
+	settingsSvc := settings.NewSettings(&generationTestAPIKeyStore{
+		values: map[string]string{
+			"openai": "sk-openai",
+		},
+	})
+	workflow := NewGenerationService(settingsSvc, nil, nil)
+	workflow.generationProviderFactory = func(route coregeneration.ModelRoute) (coregeneration.Provider, error) {
+		if route.ID != coregeneration.RouteOfficialGPT55Text {
+			t.Fatalf("route = %q, want official text route", route.ID)
+		}
+		return fakeUnsupportedTextStreamProvider{
+			response: coregeneration.Response{Text: "non-stream text"},
+		}, nil
+	}
+
+	text, err := workflow.CompleteText(context.Background(), TextCompletionRequest{
+		Prompt: "extract",
+	})
+	if err != nil {
+		t.Fatalf("CompleteText() error = %v", err)
+	}
+	if text != "non-stream text" {
+		t.Fatalf("text = %q, want non-stream text", text)
+	}
+}
+
+func TestCompleteTextRequiresConfiguredTextRoute(t *testing.T) {
+	settingsSvc := settings.NewSettings(&generationTestAPIKeyStore{values: map[string]string{}})
+	workflow := NewGenerationService(settingsSvc, nil, nil)
+	_, err := workflow.CompleteText(context.Background(), TextCompletionRequest{Prompt: "extract"})
+	if err == nil || !strings.Contains(err.Error(), "API Key 尚未配置") {
+		t.Fatalf("CompleteText() error = %v, want missing API key", err)
+	}
+}
+
+func TestCompleteTextFallsBackToCodexWhenNoRouteIsConfigured(t *testing.T) {
+	settingsSvc := settings.NewSettings(&generationTestAPIKeyStore{values: map[string]string{}})
+	workflow := NewGenerationService(settingsSvc, nil, nil)
+	codexCalls := 0
+	workflow.SetCodexTextBackend(
+		textcompletion.BackendFunc(func(_ context.Context, request textcompletion.Request) (textcompletion.Result, error) {
+			codexCalls++
+			if request.Prompt != "extract" {
+				t.Fatalf("prompt = %q", request.Prompt)
+			}
+			return textcompletion.Result{Text: "codex text", Executor: textcompletion.ExecutorCodex}, nil
+		}),
+		func(context.Context, textcompletion.Request) bool { return true },
+	)
+
+	text, err := workflow.CompleteText(context.Background(), TextCompletionRequest{Prompt: "extract"})
+	if err != nil || text != "codex text" || codexCalls != 1 {
+		t.Fatalf("CompleteText() = %q, %v, codex calls = %d", text, err, codexCalls)
+	}
+}
+
+func TestCompleteTextDoesNotRetryConfiguredRouteFailureThroughCodex(t *testing.T) {
+	settingsSvc := settings.NewSettings(&generationTestAPIKeyStore{values: map[string]string{"openai": "sk-openai"}})
+	workflow := NewGenerationService(settingsSvc, nil, nil)
+	workflow.generationProviderFactory = func(coregeneration.ModelRoute) (coregeneration.Provider, error) {
+		return nil, fmt.Errorf("route failed")
+	}
+	codexCalls := 0
+	workflow.SetCodexTextBackend(
+		textcompletion.BackendFunc(func(context.Context, textcompletion.Request) (textcompletion.Result, error) {
+			codexCalls++
+			return textcompletion.Result{Text: "codex text"}, nil
+		}),
+		func(context.Context, textcompletion.Request) bool { return true },
+	)
+
+	_, err := workflow.CompleteText(context.Background(), TextCompletionRequest{Prompt: "extract"})
+	if err == nil || !strings.Contains(err.Error(), "route failed") || codexCalls != 0 {
+		t.Fatalf("CompleteText() error = %v, codex calls = %d", err, codexCalls)
+	}
+}
+
+func TestTextRouteForAgentRuntimeModel(t *testing.T) {
+	routeID, model, ok := TextRouteForAgentRuntimeModel("mediago/deepseek-v4-flash")
+	if !ok || routeID != coregeneration.RouteMediagoDeepSeekV4FlashText || model != "deepseek-v4-flash" {
+		t.Fatalf("MediaGo DeepSeek route = %q, %q, %v", routeID, model, ok)
+	}
+
+	routeID, model, ok = TextRouteForAgentRuntimeModel("dmxapi/deepseek-v4-flash")
+	if !ok || routeID != coregeneration.RouteDMXDeepSeekV4FlashText || model != "deepseek-v4-flash" {
+		t.Fatalf("DMXAPI DeepSeek route = %q, %q, %v", routeID, model, ok)
+	}
+
+	if routeID, model, ok = TextRouteForAgentRuntimeModel("mediago/not-in-catalog"); ok {
+		t.Fatalf("unknown route = %q, %q, %v, want no fallback", routeID, model, ok)
+	}
+}
+
+type generationTestAPIKeyStore struct {
+	values map[string]string
+}
+
+func (store *generationTestAPIKeyStore) Get(keyName string) (string, string, error) {
+	value := store.values[keyName]
+	source := ""
+	if value != "" {
+		source = "test"
+	}
+	return value, source, nil
+}
+
+func (store *generationTestAPIKeyStore) Set(keyName string, value string) error {
+	store.values[keyName] = value
+	return nil
+}
+
+func (store *generationTestAPIKeyStore) Clear(keyName string) error {
+	delete(store.values, keyName)
+	return nil
+}
+
+type fakeTextStreamProvider struct {
+	request *coregeneration.Request
+	events  []coregeneration.TextStreamEvent
+}
+
+func (provider fakeTextStreamProvider) Name() string {
+	return "fake-text-stream"
+}
+
+func (provider fakeTextStreamProvider) Generate(context.Context, coregeneration.Request) (coregeneration.Response, error) {
+	return coregeneration.Response{}, nil
+}
+
+func (provider fakeTextStreamProvider) Get(context.Context, string) (coregeneration.Response, error) {
+	return coregeneration.Response{}, nil
+}
+
+func (provider fakeTextStreamProvider) GenerateTextStream(_ context.Context, request coregeneration.Request) (coregeneration.TextStream, error) {
+	if provider.request != nil {
+		*provider.request = request
+	}
+	return &fakeTextStream{events: provider.events}, nil
+}
+
+type fakeMultimodalStreamProvider struct {
+	events []multimodal.StreamEvent
+}
+
+func (provider fakeMultimodalStreamProvider) Name() string {
+	return "fake-multimodal"
+}
+
+func (provider fakeMultimodalStreamProvider) Generate(
+	context.Context,
+	multimodal.GenerateRequest,
+) (multimodal.GenerateResponse, error) {
+	return multimodal.GenerateResponse{}, nil
+}
+
+func (provider fakeMultimodalStreamProvider) Stream(
+	context.Context,
+	multimodal.GenerateRequest,
+) (*multimodal.StreamReader, error) {
+	return multimodal.StreamFromEvents(provider.events), nil
+}
+
+type fakeTextStream struct {
+	events []coregeneration.TextStreamEvent
+	index  int
+}
+
+func (stream *fakeTextStream) Recv() (coregeneration.TextStreamEvent, error) {
+	if stream.index >= len(stream.events) {
+		return coregeneration.TextStreamEvent{}, io.EOF
+	}
+	event := stream.events[stream.index]
+	stream.index++
+	return event, nil
+}
+
+func (stream *fakeTextStream) Close() error {
+	return nil
+}
+
+type fakeUnsupportedTextStreamProvider struct {
+	request  *coregeneration.Request
+	response coregeneration.Response
+}
+
+type blockingVideoGenerateProvider struct {
+	request  *coregeneration.Request
+	started  chan struct{}
+	release  chan struct{}
+	response coregeneration.Response
+	err      error
+}
+
+type blockingMultiAssetImageGenerateProvider struct {
+	started chan coregeneration.Request
+	release chan struct{}
+	err     error
+}
+
+func (provider *blockingMultiAssetImageGenerateProvider) Name() string {
+	return "blocking-image"
+}
+
+func (provider *blockingMultiAssetImageGenerateProvider) Generate(ctx context.Context, request coregeneration.Request) (coregeneration.Response, error) {
+	provider.started <- request
+	if callback, ok := coregeneration.ProgressCallbackFromOptions(request.Options); ok {
+		callback(ctx, coregeneration.ProgressEvent{
+			Response: coregeneration.Response{
+				ID:     "image-batch",
+				Status: "completed",
+				Assets: []coregeneration.Asset{
+					{Kind: coregeneration.KindImage, MIMEType: "image/png", Base64: base64.StdEncoding.EncodeToString([]byte("generated-1"))},
+					{Kind: coregeneration.KindImage, MIMEType: "image/png", Base64: base64.StdEncoding.EncodeToString([]byte("generated-2"))},
+				},
+			},
+			Completed: 2,
+			Total:     3,
+		})
+	}
+	select {
+	case <-provider.release:
+	case <-ctx.Done():
+		return coregeneration.Response{}, ctx.Err()
+	}
+	return coregeneration.Response{
+		ID:     "image-batch",
+		Status: "completed",
+		Assets: []coregeneration.Asset{
+			{Kind: coregeneration.KindImage, MIMEType: "image/png", Base64: base64.StdEncoding.EncodeToString([]byte("generated-1"))},
+			{Kind: coregeneration.KindImage, MIMEType: "image/png", Base64: base64.StdEncoding.EncodeToString([]byte("generated-2"))},
+			{Kind: coregeneration.KindImage, MIMEType: "image/png", Base64: base64.StdEncoding.EncodeToString([]byte("generated-3"))},
+		},
+	}, provider.err
+}
+
+func (provider *blockingMultiAssetImageGenerateProvider) Get(context.Context, string) (coregeneration.Response, error) {
+	return coregeneration.Response{}, nil
+}
+
+func (provider *blockingVideoGenerateProvider) Name() string {
+	return "blocking-video"
+}
+
+func (provider *blockingVideoGenerateProvider) Generate(ctx context.Context, request coregeneration.Request) (coregeneration.Response, error) {
+	provider.request = &request
+	close(provider.started)
+	select {
+	case <-provider.release:
+	case <-ctx.Done():
+		return coregeneration.Response{}, ctx.Err()
+	}
+	return provider.response, provider.err
+}
+
+func (provider *blockingVideoGenerateProvider) Get(context.Context, string) (coregeneration.Response, error) {
+	return coregeneration.Response{}, nil
+}
+
+type recordingVideoProvider struct {
+	getID    string
+	response coregeneration.Response
+	err      error
+}
+
+func (provider *recordingVideoProvider) Name() string {
+	return "recording-video"
+}
+
+func (provider *recordingVideoProvider) Generate(context.Context, coregeneration.Request) (coregeneration.Response, error) {
+	return coregeneration.Response{}, nil
+}
+
+func (provider *recordingVideoProvider) Get(_ context.Context, id string) (coregeneration.Response, error) {
+	provider.getID = id
+	return provider.response, provider.err
+}
+
+func (provider fakeUnsupportedTextStreamProvider) Name() string {
+	return "fake-unsupported-text-stream"
+}
+
+func (provider fakeUnsupportedTextStreamProvider) Generate(_ context.Context, request coregeneration.Request) (coregeneration.Response, error) {
+	if provider.request != nil {
+		*provider.request = request
+	}
+	return provider.response, nil
+}
+
+func (provider fakeUnsupportedTextStreamProvider) Get(context.Context, string) (coregeneration.Response, error) {
+	return coregeneration.Response{}, nil
+}
+
+func (provider fakeUnsupportedTextStreamProvider) GenerateTextStream(context.Context, coregeneration.Request) (coregeneration.TextStream, error) {
+	return nil, fmt.Errorf("fake stream unsupported: %w", coregeneration.ErrTextStreamingUnsupported)
+}
+
+type stubImageProvider struct {
+	generateResponse coregeneration.Response
+	generateErr      error
+	getResponse      coregeneration.Response
+	getErr           error
+	getID            string
+}
+
+func (provider *stubImageProvider) Name() string { return "stub-image" }
+
+func (provider *stubImageProvider) Generate(context.Context, coregeneration.Request) (coregeneration.Response, error) {
+	return provider.generateResponse, provider.generateErr
+}
+
+func (provider *stubImageProvider) Get(_ context.Context, id string) (coregeneration.Response, error) {
+	provider.getID = id
+	return provider.getResponse, provider.getErr
+}
+
+func jimengImageTaskRecord(id string) GenerationTaskRecord {
+	return GenerationTaskRecord{
+		ID:        id,
+		Kind:      string(coregeneration.KindImage),
+		RouteID:   coregeneration.RouteJimengSeedream50,
+		FamilyID:  coregeneration.FamilySeedream,
+		VersionID: coregeneration.VersionSeedream5Lite,
+		Provider:  coregeneration.ProviderJimeng,
+		Model:     coregeneration.ModelSeedream50,
+		Prompt:    "a cat",
+		Status:    "submitted",
+	}
+}
+
+func libTVImageTaskRecord(id string) GenerationTaskRecord {
+	return GenerationTaskRecord{
+		ID:        id,
+		Kind:      string(coregeneration.KindImage),
+		RouteID:   coregeneration.RouteLibTVGPTImage2,
+		FamilyID:  coregeneration.FamilyGPTImage,
+		VersionID: coregeneration.VersionGPTImage2,
+		Provider:  coregeneration.ProviderLibTV,
+		Model:     "Lib Image",
+		Prompt:    "a cat",
+		Status:    "submitted",
+	}
+}
+
+func jimengSeedanceVideoTaskRecord(id string, routeID string, status string) GenerationTaskRecord {
+	route, ok := coregeneration.FindRoute(routeID)
+	if !ok {
+		panic("unknown route " + routeID)
+	}
+	return GenerationTaskRecord{
+		ID:        id,
+		Kind:      string(coregeneration.KindVideo),
+		RouteID:   route.ID,
+		FamilyID:  route.FamilyID,
+		VersionID: route.VersionID,
+		Provider:  route.Provider,
+		ModelID:   route.LegacyModelID,
+		Model:     route.Model,
+		Prompt:    "make a short clip",
+		Status:    status,
+	}
+}
+
+func TestCompleteSubmittedGenerationHandsOffPendingImage(t *testing.T) {
+	repo, err := newTestGenerationTaskRepository(t, filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	store := NewGenerationTaskServiceFromRepository(repo, nil, nil)
+	settingsSvc := settings.NewSettings(&generationTestAPIKeyStore{
+		values: map[string]string{coregeneration.ProviderJimeng: "configured"},
+	})
+	workflow := NewGenerationService(settingsSvc, store, nil)
+
+	// The provider ran out of its inline poll budget while jimeng was still "querying".
+	provider := &stubImageProvider{
+		generateResponse: coregeneration.Response{
+			ID:     "jimeng.seedream-5.0:submit-1",
+			Status: "submitted",
+		},
+	}
+	task := jimengImageTaskRecord("generation-img-1")
+	// The task is created before the background worker runs, matching production where the
+	// handler persists it prior to launching completeSubmittedGeneration.
+	if err := store.Upsert(task); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+	workflow.completeSubmittedGeneration(
+		context.Background(),
+		task,
+		provider,
+		coregeneration.Request{Kind: coregeneration.KindImage, Prompt: "a cat"},
+		"create",
+		"",
+		"",
+	)
+
+	stored, ok, err := store.Get("generation-img-1")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !ok || stored.Status != "submitted" ||
+		stored.ProviderTaskID != "jimeng.seedream-5.0:submit-1" {
+		t.Fatalf("task = %+v, want submitted handoff carrying the provider task id", stored)
+	}
+
+	pending, err := store.ListPending(10)
+	if err != nil {
+		t.Fatalf("ListPending() error = %v", err)
+	}
+	if !slicesContainsTaskID(pending, "generation-img-1") {
+		t.Fatalf("ListPending = %+v, want the handed-off image task", pending)
+	}
+}
+
+func TestLibTVImageGenerationHandoffAndPoll(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "settings.db")
+	repo, err := newTestGenerationTaskRepository(t, dbPath)
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	store := NewGenerationTaskServiceFromRepository(repo, nil, nil)
+	mediaAssets := newTestMediaAssets(t, dbPath, t.TempDir())
+	settingsSvc := settings.NewSettings(&generationTestAPIKeyStore{
+		values: map[string]string{coregeneration.ProviderLibTV: "oauth:configured"},
+	})
+	provider := &stubImageProvider{
+		generateResponse: coregeneration.Response{
+			ID:     coregeneration.RouteLibTVGPTImage2 + ":project-123:node-123",
+			Status: "submitted",
+		},
+		getResponse: coregeneration.Response{
+			ID:     coregeneration.RouteLibTVGPTImage2 + ":project-123:node-123",
+			Status: "completed",
+			Assets: []coregeneration.Asset{{
+				Kind:     coregeneration.KindImage,
+				Base64:   "aW1hZ2U=",
+				MIMEType: "image/png",
+			}},
+		},
+	}
+	workflow := NewGenerationService(settingsSvc, store, mediaAssets)
+	workflow.generationProviderFactory = func(route coregeneration.ModelRoute) (coregeneration.Provider, error) {
+		if route.ID != coregeneration.RouteLibTVGPTImage2 {
+			t.Fatalf("route = %q, want LibTV GPT Image 2", route.ID)
+		}
+		return provider, nil
+	}
+
+	route, ok := coregeneration.FindRoute(coregeneration.RouteLibTVGPTImage2)
+	if !ok {
+		t.Fatal("LibTV GPT Image 2 route is missing")
+	}
+	if route.Async {
+		t.Fatal("LibTV GPT Image 2 async = true, want server-managed background execution")
+	}
+
+	response, status, err := workflow.CreateGenerationMessage(context.Background(), GenerationMessageRequest{
+		Kind:    string(coregeneration.KindImage),
+		RouteID: coregeneration.RouteLibTVGPTImage2,
+		Prompt:  "a cinematic cat portrait",
+	})
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("CreateGenerationMessage() status = %d error = %v", status, err)
+	}
+	if !IsActiveGenerationStatus(response.Status) || strings.Contains(response.ID, ":") {
+		t.Fatalf("response = %+v, want active task with a local task ID", response)
+	}
+
+	handedOff := waitForGenerationTask(t, store, response.ID, func(task GenerationTaskRecord) bool {
+		return task.ProviderTaskID == coregeneration.RouteLibTVGPTImage2+":project-123:node-123"
+	})
+	if handedOff.RouteID != coregeneration.RouteLibTVGPTImage2 || handedOff.Kind != string(coregeneration.KindImage) {
+		t.Fatalf("handed-off task = %+v, want persisted LibTV image route", handedOff)
+	}
+
+	workflow.PollGenerationTask(context.Background(), handedOff)
+	completed, ok, err := store.Get(response.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !ok || completed.Status != "completed" || completed.Kind != string(coregeneration.KindImage) || len(completed.Assets) != 1 {
+		t.Fatalf("task = %+v, want the same local task completed with one image", completed)
+	}
+	if provider.getID != coregeneration.RouteLibTVGPTImage2+":project-123:node-123" {
+		t.Fatalf("provider get id = %q, want handed-off LibTV node id", provider.getID)
+	}
+}
+
+func TestPollGenerationTaskCompletesHandedOffImage(t *testing.T) {
+	repo, err := newTestGenerationTaskRepository(t, filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	store := NewGenerationTaskServiceFromRepository(repo, nil, nil)
+	settingsSvc := settings.NewSettings(&generationTestAPIKeyStore{
+		values: map[string]string{coregeneration.ProviderJimeng: "configured"},
+	})
+	provider := &stubImageProvider{
+		getResponse: coregeneration.Response{
+			ID:     "jimeng.seedream-5.0:submit-1",
+			Status: "completed",
+			Assets: []coregeneration.Asset{
+				{
+					Kind:     coregeneration.KindImage,
+					Base64:   "aW1hZ2U=",
+					MIMEType: "image/png",
+				},
+			},
+		},
+	}
+	workflow := NewGenerationService(settingsSvc, store, nil)
+	workflow.generationProviderFactory = func(route coregeneration.ModelRoute) (coregeneration.Provider, error) {
+		if route.ID != coregeneration.RouteJimengSeedream50 {
+			t.Fatalf("route = %q, want jimeng seedream image route", route.ID)
+		}
+		return provider, nil
+	}
+
+	handedOff := jimengImageTaskRecord("generation-img-2")
+	handedOff.ProviderTaskID = "jimeng.seedream-5.0:submit-1"
+	if err := store.Upsert(handedOff); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+
+	task, ok, err := store.Get("generation-img-2")
+	if err != nil || !ok {
+		t.Fatalf("Get() ok = %v error = %v", ok, err)
+	}
+	workflow.PollGenerationTask(context.Background(), task)
+
+	if provider.getID != "jimeng.seedream-5.0:submit-1" {
+		t.Fatalf("provider get id = %q, want the handed-off provider task id", provider.getID)
+	}
+	completed, ok, err := store.Get("generation-img-2")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !ok || completed.Status != "completed" {
+		t.Fatalf("task = %+v, want completed image task", completed)
+	}
+}
+
+func TestPollGenerationTaskTimesOutExpiredHandedOffImage(t *testing.T) {
+	repo, err := newTestGenerationTaskRepository(t, filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	store := NewGenerationTaskServiceFromRepository(repo, nil, nil)
+	settingsSvc := settings.NewSettings(&generationTestAPIKeyStore{
+		values: map[string]string{coregeneration.ProviderJimeng: "configured"},
+	})
+	// The provider is still "querying" — jimeng never returned a result.
+	provider := &stubImageProvider{
+		getResponse: coregeneration.Response{
+			ID:     "jimeng.seedream-5.0:submit-1",
+			Status: "submitted",
+		},
+	}
+	workflow := NewGenerationService(settingsSvc, store, nil)
+	workflow.generationProviderFactory = func(route coregeneration.ModelRoute) (coregeneration.Provider, error) {
+		return provider, nil
+	}
+
+	handedOff := jimengImageTaskRecord("generation-img-3")
+	handedOff.ProviderTaskID = "jimeng.seedream-5.0:submit-1"
+	handedOff.CreatedAt = time.Now().UTC().Add(-20 * time.Minute).Format(time.RFC3339Nano)
+	if err := store.Upsert(handedOff); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+
+	task, ok, err := store.Get("generation-img-3")
+	if err != nil || !ok {
+		t.Fatalf("Get() ok = %v error = %v", ok, err)
+	}
+	workflow.PollGenerationTask(context.Background(), task)
+
+	failed, ok, err := store.Get("generation-img-3")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !ok || failed.Status != "failed" {
+		t.Fatalf("task = %+v, want failed after exceeding the background poll cap", failed)
+	}
+	if !strings.Contains(failed.Error, "超时") {
+		t.Fatalf("error = %q, want a timeout message", failed.Error)
+	}
+}
+
+func TestLibTVImagePollErrorTimesOutOnlyExpiredTask(t *testing.T) {
+	tests := []struct {
+		name       string
+		createdAt  string
+		wantStatus string
+	}{
+		{
+			name:       "before age cap remains retryable",
+			wantStatus: "submitted",
+		},
+		{
+			name:       "after age cap fails",
+			createdAt:  time.Now().UTC().Add(-maxBackgroundImageGenerationAge - time.Minute).Format(time.RFC3339Nano),
+			wantStatus: "failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo, err := newTestGenerationTaskRepository(t, filepath.Join(t.TempDir(), "settings.db"))
+			if err != nil {
+				t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+			}
+			store := NewGenerationTaskServiceFromRepository(repo, nil, nil)
+			settingsSvc := settings.NewSettings(&generationTestAPIKeyStore{
+				values: map[string]string{coregeneration.ProviderLibTV: "oauth:configured"},
+			})
+			provider := &stubImageProvider{getErr: fmt.Errorf("libtv status unavailable")}
+			workflow := NewGenerationService(settingsSvc, store, nil)
+			workflow.generationProviderFactory = func(coregeneration.ModelRoute) (coregeneration.Provider, error) {
+				return provider, nil
+			}
+
+			handedOff := libTVImageTaskRecord("generation-libtv-poll-error")
+			handedOff.ProviderTaskID = coregeneration.RouteLibTVGPTImage2 + ":project-123:node-error"
+			handedOff.CreatedAt = tt.createdAt
+			if err := store.Upsert(handedOff); err != nil {
+				t.Fatalf("Upsert() error = %v", err)
+			}
+			task, ok, err := store.Get(handedOff.ID)
+			if err != nil || !ok {
+				t.Fatalf("Get() ok = %v error = %v", ok, err)
+			}
+
+			workflow.PollGenerationTask(context.Background(), task)
+
+			stored, ok, err := store.Get(handedOff.ID)
+			if err != nil {
+				t.Fatalf("Get() error = %v", err)
+			}
+			if !ok || stored.Status != tt.wantStatus {
+				t.Fatalf("task = %+v, want status %q", stored, tt.wantStatus)
+			}
+			if tt.wantStatus == "failed" {
+				if !strings.Contains(stored.Error, "图片生成超时") {
+					t.Fatalf("error = %q, want generic image timeout", stored.Error)
+				}
+				if strings.Contains(stored.Error, "即梦") {
+					t.Fatalf("error = %q, should not name another provider", stored.Error)
+				}
+			}
+		})
+	}
+}
+
+func slicesContainsTaskID(tasks []GenerationTaskRecord, id string) bool {
+	for _, task := range tasks {
+		if task.ID == id {
+			return true
+		}
+	}
+	return false
+}

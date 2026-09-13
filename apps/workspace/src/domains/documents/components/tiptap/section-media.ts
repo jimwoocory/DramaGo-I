@@ -1,0 +1,186 @@
+import type {
+	MarkdownSectionIdentity,
+	MarkdownSectionMedia,
+	MarkdownSectionMediaKind,
+} from "@/domains/documents/lib/editor-registry";
+import {
+	documentSectionHeadingLevel,
+	findMarkdownSectionEndLine,
+	findMarkdownSectionHeadingLine,
+} from "@/domains/documents/lib/sections";
+
+export const appendSectionMediaMarkdown = (
+	markdown: string,
+	section: MarkdownSectionIdentity,
+	media: MarkdownSectionMedia,
+) => {
+	if (!isRenderableSectionMedia(media)) return null;
+
+	const lines = markdown.split("\n");
+	const headingIndex = findSectionHeadingLine(lines, section);
+	if (headingIndex < 0) return null;
+
+	const sectionEnd = findSectionEndLine(lines, headingIndex);
+	const sectionLines = lines.slice(headingIndex, sectionEnd);
+	const mediaMarkdown = sectionMediaMarkdown(media);
+	const mediaAlreadyExists = sectionLines.some(
+		(line) => sectionMediaSourceFromLine(line.trim(), media.kind) === media.src,
+	);
+	if (mediaAlreadyExists) {
+		return {
+			markdown,
+			changed: false,
+		};
+	}
+
+	const nextSectionLines = appendSectionMediaLine(sectionLines, mediaMarkdown);
+
+	return {
+		markdown: [
+			...lines.slice(0, headingIndex),
+			...nextSectionLines,
+			...lines.slice(sectionEnd),
+		].join("\n"),
+		changed: true,
+	};
+};
+
+export const removeSectionMediaMarkdown = (
+	markdown: string,
+	section: MarkdownSectionIdentity,
+	media: MarkdownSectionMedia,
+) => {
+	if (!media.src.trim()) return null;
+
+	const lines = markdown.split("\n");
+	const headingIndex = findSectionHeadingLine(lines, section);
+	if (headingIndex < 0) return null;
+
+	const sectionEnd = findSectionEndLine(lines, headingIndex);
+	const sectionLines = lines.slice(headingIndex, sectionEnd);
+	let changed = false;
+	const nextSectionLines = trimTrailingBlankLines(
+		sectionLines.filter((line) => {
+			const source = sectionMediaSourceFromLine(line.trim(), media.kind);
+			if (source !== media.src) return true;
+
+			changed = true;
+			return false;
+		}),
+	);
+	if (!changed) return { markdown, changed: false };
+
+	return {
+		markdown: [
+			...lines.slice(0, headingIndex),
+			...nextSectionLines,
+			...lines.slice(sectionEnd),
+		].join("\n"),
+		changed: true,
+	};
+};
+
+export const sectionMediaSourceFromLine = (line: string, kind: MarkdownSectionMediaKind) => {
+	const media = sectionMediaFromMarkdownLine(line);
+	if (!media || media.kind !== kind) return null;
+
+	return media.src;
+};
+
+export const sectionMediaFromMarkdownLine = (line: string): MarkdownSectionMedia | null => {
+	const link = markdownLinkFromLine(line);
+	if (!link) return null;
+
+	const label = sectionMediaLabelFromText(link.label);
+	if (!label) return null;
+	const source = link.source.trim();
+	if (!source) return null;
+
+	return {
+		kind: label.kind,
+		src: source,
+		...(label.title ? { title: label.title } : {}),
+	};
+};
+
+const findSectionHeadingLine = (lines: string[], section: MarkdownSectionIdentity) => {
+	return findMarkdownSectionHeadingLine(lines, section);
+};
+
+const findSectionEndLine = (lines: string[], headingIndex: number) => {
+	return findMarkdownSectionEndLine(lines, headingIndex, documentSectionHeadingLevel);
+};
+
+const sectionMediaLabelPrefix: Record<MarkdownSectionMediaKind, string> = {
+	audio: "章节音频",
+	video: "章节视频",
+};
+
+export const sectionMediaMarkdown = (media: MarkdownSectionMedia) => {
+	if (!isRenderableSectionMedia(media)) return "";
+
+	const prefix = sectionMediaLabelPrefix[media.kind];
+	const title = media.title?.trim();
+	const label = `${prefix}：${title}`;
+	const source = media.src.trim();
+
+	return `[${escapeMarkdownLinkText(label)}](<${source}>)`;
+};
+
+export const isRenderableSectionMedia = (media: MarkdownSectionMedia) =>
+	media.src.trim() !== "" && media.title?.trim() !== "";
+
+const markdownLinkLinePattern = /^\[((?:\\.|[^\]\\])*)\]\((?:<([^>]+)>|([^\s)]+))\)$/;
+
+const markdownLinkFromLine = (line: string) => {
+	const match = markdownLinkLinePattern.exec(line);
+	if (!match) return null;
+
+	return {
+		label: unescapeMarkdownLinkText(match[1]),
+		source: normalizeMarkdownLinkSource(match[2] ?? match[3] ?? ""),
+	};
+};
+
+const normalizeMarkdownLinkSource = (source: string) =>
+	/^<\s*>$/.test(source.trim()) ? "" : source;
+
+const sectionMediaLabelFromText = (label: string) => {
+	for (const kind of sectionMediaKinds) {
+		const prefix = sectionMediaLabelPrefix[kind];
+		if (label.startsWith(`${prefix}：`) || label.startsWith(`${prefix}:`)) {
+			const title = label.slice(prefix.length + 1).trim();
+			if (!title) return null;
+			return {
+				kind,
+				title,
+			};
+		}
+	}
+
+	return null;
+};
+
+const sectionMediaKinds = ["audio", "video"] as const;
+
+const appendSectionMediaLine = (sectionLines: string[], mediaMarkdown: string) => {
+	const cleanedSectionLines = trimTrailingBlankLines(sectionLines);
+	const needsSeparator =
+		cleanedSectionLines.length > 0 &&
+		cleanedSectionLines[cleanedSectionLines.length - 1].trim() !== "";
+
+	return [...cleanedSectionLines, ...(needsSeparator ? [""] : []), mediaMarkdown];
+};
+
+const trimTrailingBlankLines = (lines: string[]) => {
+	const nextLines = [...lines];
+	while (nextLines.length > 0 && !nextLines[nextLines.length - 1].trim()) {
+		nextLines.pop();
+	}
+
+	return nextLines;
+};
+
+const escapeMarkdownLinkText = (value: string) => value.replace(/[[\]\\]/g, "\\$&");
+
+const unescapeMarkdownLinkText = (value: string) => value.replace(/\\([[\]\\])/g, "$1");

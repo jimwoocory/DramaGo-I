@@ -1,0 +1,485 @@
+package routes
+
+import (
+	"github.com/gin-gonic/gin"
+	mediamcp "github.com/mediago-dev/mediago-drama/packages/mcp/pkg/mcp"
+	httphandlers "github.com/mediago-dev/mediago-drama/services/server/internal/http/handlers"
+	serviceevents "github.com/mediago-dev/mediago-drama/services/server/internal/service/events"
+)
+
+// Handlers groups the concrete HTTP handlers used by the app router.
+type Handlers struct {
+	Health                httphandlers.Health
+	MCP                   httphandlers.MCP
+	Settings              httphandlers.Settings
+	Capabilities          httphandlers.Capabilities
+	Billing               httphandlers.Billing
+	MediaAssets           httphandlers.MediaAssets
+	ProjectAssets         httphandlers.ProjectAssets
+	ProductionProfiles    httphandlers.ProductionProfiles
+	AgentBackends         httphandlers.AgentBackends
+	Projects              httphandlers.Projects
+	ProjectConfigs        httphandlers.ProjectConfigs
+	ProjectBriefs         httphandlers.ProjectBriefs
+	Workspace             httphandlers.Workspace
+	Canon                 httphandlers.Canon
+	ShotManifests         httphandlers.ShotManifests
+	EpisodePreview        httphandlers.EpisodePreview
+	JianyingDraft         httphandlers.JianyingDraft
+	WorkspaceEvents       httphandlers.WorkspaceEvents
+	PromptPacks           httphandlers.PromptPacks
+	PromptTemplates       httphandlers.PromptTemplates
+	PromptLibrary         httphandlers.PromptLibrary
+	Skills                httphandlers.Skills
+	CodexSkills           httphandlers.CodexSkills
+	DocumentToolApprovals httphandlers.DocumentToolApprovals
+	AgentSelections       httphandlers.AgentSelections
+	AgentPermissions      httphandlers.AgentPermissions
+	AgentChat             httphandlers.AgentChat
+	AgentMessages         httphandlers.AgentMessages
+	DocumentOperations    httphandlers.DocumentOperations
+	GenerationTasks       httphandlers.GenerationTasks
+	GenerationPreferences httphandlers.GenerationPreferences
+	InternalEvents        httphandlers.InternalEvents
+	AgentEvents           httphandlers.AgentEvents
+	AgentRuntime          httphandlers.AgentRuntime
+	AgentSessions         httphandlers.AgentSessions
+}
+
+// Register attaches all app routes to the provided Gin engine.
+func Register(router *gin.Engine, handlers Handlers) {
+	router.Any("/mcp", handlers.MCP.HandleExternalMCP)
+	router.Any(mediamcp.LegacyDocumentHTTPPath, handlers.MCP.HandleLegacyDocumentMCP)
+	router.Any(mediamcp.LegacyGenerationHTTPPath, handlers.MCP.HandleLegacyGenerationMCP)
+
+	apiRoutes := router.Group("/api/v1")
+	registerCoreRoutes(apiRoutes, handlers)
+	registerSettingsRoutes(apiRoutes, handlers)
+	registerGenerationRoutes(apiRoutes, handlers)
+	registerProjectRoutes(apiRoutes.Group("/projects/:projectId"), handlers)
+}
+
+func registerCoreRoutes(apiRoutes *gin.RouterGroup, handlers Handlers) {
+	apiRoutes.GET("/health", handlers.Health.HandleHealth)
+	apiRoutes.GET("/capabilities", handlers.Capabilities.HandleListCapabilities)
+	apiRoutes.GET("/billing/summary", handlers.Billing.HandleBillingSummary)
+	apiRoutes.GET("/projects", handlers.Projects.HandleListProjects)
+	apiRoutes.POST("/projects", handlers.Projects.HandleCreateProject)
+	apiRoutes.GET("/production-profiles", handlers.ProductionProfiles.HandleListProductionProfiles)
+	apiRoutes.GET("/packs", handlers.PromptPacks.HandleListPacks)
+	apiRoutes.POST("/packs", handlers.PromptPacks.HandleCreatePack)
+	apiRoutes.POST("/packs/import", handlers.PromptPacks.HandleImportPack)
+	apiRoutes.POST("/packs/install", handlers.PromptPacks.HandleInstallPack)
+	apiRoutes.POST("/packs/:id/fork", handlers.PromptPacks.HandleForkPack)
+	apiRoutes.GET("/packs/:id/contents", handlers.PromptPacks.HandleGetPackContents)
+	apiRoutes.PUT("/packs/:id/contents", handlers.PromptPacks.HandlePutPackContents)
+	apiRoutes.POST("/packs/:id/categories", handlers.PromptPacks.HandleCreatePackCategory)
+	apiRoutes.PUT("/packs/:id/categories/:categoryId", handlers.PromptPacks.HandleUpdatePackCategory)
+	apiRoutes.DELETE("/packs/:id/categories/:categoryId", handlers.PromptPacks.HandleDeletePackCategory)
+	apiRoutes.POST("/packs/:id/entries/copy", handlers.PromptPacks.HandleCopyPackEntries)
+	apiRoutes.POST("/packs/:id/entries", handlers.PromptPacks.HandleCreatePackEntry)
+	apiRoutes.PUT("/packs/:id/entries", handlers.PromptPacks.HandlePutPackEntry)
+	apiRoutes.POST("/packs/:id/entries/reset", handlers.PromptPacks.HandleResetPackEntry)
+	apiRoutes.POST("/packs/:id/entries/detach", handlers.PromptPacks.HandleDetachPackEntry)
+	apiRoutes.POST("/packs/:id/entries/remove", handlers.PromptPacks.HandleRemovePackEntry)
+	apiRoutes.GET("/packs/:id/export", handlers.PromptPacks.HandleExportPack)
+	apiRoutes.POST("/packs/:id/reset", handlers.PromptPacks.HandleResetPack)
+	apiRoutes.PATCH("/packs/:id", handlers.PromptPacks.HandlePatchPack)
+	apiRoutes.DELETE("/packs/:id", handlers.PromptPacks.HandleDeletePack)
+	apiRoutes.GET("/prompt-templates", handlers.PromptTemplates.HandleListPromptTemplates)
+	apiRoutes.PUT("/prompt-templates/:id", handlers.PromptTemplates.HandlePutPromptTemplate)
+	apiRoutes.POST("/prompt-templates/:id/reset", handlers.PromptTemplates.HandleResetPromptTemplate)
+	apiRoutes.GET("/prompt-categories", handlers.PromptLibrary.HandleListCategories)
+	apiRoutes.POST("/prompt-categories", handlers.PromptLibrary.HandlePostCategory)
+	apiRoutes.GET("/prompt-presets", handlers.PromptLibrary.HandleListPrompts)
+	apiRoutes.POST("/prompt-presets", handlers.PromptLibrary.HandlePostPrompt)
+	apiRoutes.GET("/prompt-presets/:id", handlers.PromptLibrary.HandleGetPrompt)
+	apiRoutes.GET("/prompt-presets/:id/use", handlers.PromptLibrary.HandleGetPromptForUse)
+	apiRoutes.PUT("/prompt-presets/:id", handlers.PromptLibrary.HandlePutPrompt)
+	apiRoutes.POST("/prompt-presets/:id/reset", handlers.PromptLibrary.HandleResetPrompt)
+	apiRoutes.DELETE("/prompt-presets/:id", handlers.PromptLibrary.HandleDeletePrompt)
+	apiRoutes.GET("/skills", handlers.Skills.HandleListSkills)
+	apiRoutes.POST("/skills", handlers.Skills.HandlePostSkill)
+	apiRoutes.GET("/skills/:name", handlers.Skills.HandleGetSkill)
+	apiRoutes.PUT("/skills/:name", handlers.Skills.HandlePutSkill)
+	apiRoutes.POST("/skills/:name/reset", handlers.Skills.HandleResetSkill)
+	apiRoutes.DELETE("/skills/:name", handlers.Skills.HandleDeleteSkill)
+	apiRoutes.GET("/codex-skills", handlers.CodexSkills.HandleListCodexSkills)
+	apiRoutes.GET("/codex-skills/:id", handlers.CodexSkills.HandleGetCodexSkill)
+	apiRoutes.GET("/agent/backends", handlers.AgentBackends.HandleListBackends)
+	apiRoutes.GET("/media-assets", handlers.MediaAssets.HandleMediaAssets)
+	apiRoutes.POST("/media-assets", handlers.MediaAssets.HandleUploadMediaAsset)
+	apiRoutes.GET("/media-assets/:assetId/content", handlers.MediaAssets.HandleMediaAssetContent)
+	apiRoutes.GET("/media-assets/:assetId/poster", handlers.MediaAssets.HandleMediaAssetPoster)
+	apiRoutes.PUT("/media-assets/:assetId", handlers.MediaAssets.HandleUpdateMediaAsset)
+	apiRoutes.DELETE("/media-assets/:assetId", handlers.MediaAssets.HandleDeleteMediaAsset)
+	apiRoutes.Any("/internal/agent/document-mcp", handlers.MCP.HandleInternalDocumentMCP)
+	apiRoutes.Any("/internal/agent/generation-mcp", handlers.MCP.HandleInternalGenerationMCP)
+	apiRoutes.Any(
+		"/internal/projects/:projectId/agent/document-mcp",
+		handlers.MCP.HandleProjectDocumentMCP,
+	)
+	apiRoutes.Any(
+		"/internal/projects/:projectId/agent/generation-mcp",
+		handlers.MCP.HandleProjectGenerationMCP,
+	)
+	apiRoutes.POST(
+		serviceevents.InternalEventsPublishRoute,
+		handlers.InternalEvents.HandleInternalPublishEvent,
+	)
+}
+
+func registerSettingsRoutes(apiRoutes *gin.RouterGroup, handlers Handlers) {
+	apiRoutes.GET("/settings/jianying-draft", handlers.Settings.HandleJianyingDraftSettings)
+	apiRoutes.PUT("/settings/jianying-draft", handlers.Settings.HandlePutJianyingDraftSettings)
+	apiRoutes.GET("/settings/codex-account", handlers.Settings.HandleCodexAccount)
+	apiRoutes.POST("/settings/codex-account/login", handlers.Settings.HandlePostCodexAccountLogin)
+	apiRoutes.GET("/settings/codex-account/login/:loginId", handlers.Settings.HandleCodexAccountLogin)
+	apiRoutes.DELETE("/settings/codex-account/login/:loginId", handlers.Settings.HandleDeleteCodexAccountLogin)
+	apiRoutes.DELETE("/settings/codex-account", handlers.Settings.HandleDeleteCodexAccount)
+	apiRoutes.GET("/settings/codex-relay", handlers.Settings.HandleCodexRelaySettings)
+	apiRoutes.PUT("/settings/codex-relay", handlers.Settings.HandlePutCodexRelaySettings)
+	apiRoutes.POST("/settings/codex-relay/check", handlers.Settings.HandleCheckCodexRelaySettings)
+	apiRoutes.PUT(
+		"/settings/codex-relay/profiles/:profileId/api-key",
+		handlers.Settings.HandlePutCodexRelayProfileAPIKey,
+	)
+	apiRoutes.DELETE(
+		"/settings/codex-relay/profiles/:profileId/api-key",
+		handlers.Settings.HandleDeleteCodexRelayProfileAPIKey,
+	)
+	apiRoutes.GET("/settings/model-platforms", handlers.Settings.HandleModelPlatforms)
+	apiRoutes.GET("/settings/aihubmix", handlers.Settings.HandleAIHubMixSettings)
+	apiRoutes.GET("/settings/unified-models", handlers.Settings.HandleUnifiedModels)
+	apiRoutes.PUT("/settings/unified-models", handlers.Settings.HandlePutUnifiedModel)
+	apiRoutes.PUT("/settings/aihubmix", handlers.Settings.HandlePutAIHubMixSettings)
+	apiRoutes.GET("/settings/speech-api", handlers.Settings.HandleSpeechAPISettings)
+	apiRoutes.PUT("/settings/speech-api", handlers.Settings.HandlePutSpeechAPISettings)
+	apiRoutes.GET("/settings/video-api", handlers.Settings.HandleVideoAPISettings)
+	apiRoutes.PUT("/settings/video-api", handlers.Settings.HandlePutVideoAPISettings)
+	apiRoutes.GET("/settings/api-keys", handlers.Settings.HandleAPIKeys)
+	apiRoutes.PUT("/settings/api-keys/:provider", handlers.Settings.HandlePutAPIKey)
+	apiRoutes.DELETE("/settings/api-keys/:provider", handlers.Settings.HandleDeleteAPIKey)
+	apiRoutes.POST("/settings/api-keys/:provider/login", handlers.Settings.HandlePostProviderLogin)
+	apiRoutes.POST(
+		"/settings/api-keys/:provider/login/check",
+		handlers.Settings.HandlePostProviderLoginCheck,
+	)
+	apiRoutes.GET(
+		"/settings/agent-model-profiles",
+		handlers.Settings.HandleAgentModelProfiles,
+	)
+	apiRoutes.POST(
+		"/settings/agent-model-profiles",
+		handlers.Settings.HandlePostAgentModelProfile,
+	)
+	apiRoutes.PATCH(
+		"/settings/agent-model-profiles/:profileId",
+		handlers.Settings.HandlePatchAgentModelProfile,
+	)
+	apiRoutes.DELETE(
+		"/settings/agent-model-profiles/:profileId",
+		handlers.Settings.HandleDeleteAgentModelProfile,
+	)
+	apiRoutes.PUT(
+		"/settings/agent-model-profiles/:profileId/default",
+		handlers.Settings.HandlePutAgentModelProfileDefault,
+	)
+	apiRoutes.PUT(
+		"/settings/agent-model-profiles/:profileId/api-key",
+		handlers.Settings.HandlePutAgentModelProfileAPIKey,
+	)
+	apiRoutes.DELETE(
+		"/settings/agent-model-profiles/:profileId/api-key",
+		handlers.Settings.HandleDeleteAgentModelProfileAPIKey,
+	)
+	apiRoutes.GET("/codex-relay/*path", handlers.Settings.HandleCodexRelayProxy)
+	apiRoutes.POST("/codex-relay/*path", handlers.Settings.HandleCodexRelayProxy)
+	apiRoutes.DELETE("/codex-relay/*path", handlers.Settings.HandleCodexRelayProxy)
+}
+
+func registerGenerationRoutes(apiRoutes *gin.RouterGroup, handlers Handlers) {
+	apiRoutes.GET("/generation/models", handlers.GenerationTasks.HandleGenerationModels)
+	apiRoutes.POST("/generation/voice-preview", handlers.GenerationTasks.HandleGenerationVoicePreview)
+	apiRoutes.GET(
+		"/generation/voice-previews/:routeId/:voiceId",
+		handlers.GenerationTasks.HandleGenerationVoicePreviewContent,
+	)
+	apiRoutes.GET(
+		"/generation/style-previews/:presetId",
+		handlers.GenerationTasks.HandleGenerationStylePreviewContent,
+	)
+	apiRoutes.GET("/generation/sessions", handlers.GenerationTasks.HandleGenerationConversations)
+	apiRoutes.POST("/generation/sessions", handlers.GenerationTasks.HandleCreateGenerationConversation)
+	apiRoutes.DELETE(
+		"/generation/sessions/:sessionId",
+		handlers.GenerationTasks.HandleDeleteGenerationConversation,
+	)
+	apiRoutes.GET(
+		"/generation/sessions/:sessionId/preferences",
+		handlers.GenerationPreferences.HandleGenerationPreferences,
+	)
+	apiRoutes.PUT(
+		"/generation/sessions/:sessionId/preferences",
+		handlers.GenerationPreferences.HandlePutGenerationPreferences,
+	)
+	apiRoutes.GET(
+		"/generation/sessions/:sessionId/tasks",
+		handlers.GenerationTasks.HandleGenerationSessionTasks,
+	)
+	apiRoutes.POST(
+		"/generation/sessions/:sessionId/media-assets/import",
+		handlers.GenerationTasks.HandleImportGenerationMediaAssets,
+	)
+	apiRoutes.POST(
+		"/generation/sessions/:sessionId/messages",
+		handlers.GenerationTasks.HandleGenerationMessage,
+	)
+	apiRoutes.POST(
+		"/generation/sessions/:sessionId/messages/optimize-and-generate",
+		handlers.GenerationTasks.HandlePromptOptimizedGenerationMessage,
+	)
+	apiRoutes.POST("/generation/batches", handlers.GenerationTasks.HandleCreateGenerationBatch)
+	apiRoutes.GET(
+		"/generation/batches/:batchId/tasks",
+		handlers.GenerationTasks.HandleGenerationBatchTasks,
+	)
+	apiRoutes.POST(
+		"/generation/sessions/:sessionId/messages/stream",
+		handlers.GenerationTasks.HandleGenerationTextStream,
+	)
+	registerGenerationNotificationRoutes(apiRoutes, handlers.GenerationTasks, true)
+	apiRoutes.GET("/generation/tasks", handlers.GenerationTasks.HandleGenerationTasks)
+	apiRoutes.GET("/generation/tasks/:taskId", handlers.GenerationTasks.HandleGenerationTask)
+	apiRoutes.POST(
+		"/generation/tasks/:taskId/retry",
+		handlers.GenerationTasks.HandleRetryGenerationTask,
+	)
+	apiRoutes.PATCH(
+		"/generation/tasks/:taskId/assets/:assetIndex",
+		handlers.GenerationTasks.HandleUpdateGenerationTaskAsset,
+	)
+	apiRoutes.DELETE(
+		"/generation/tasks/:taskId/assets/:assetIndex",
+		handlers.GenerationTasks.HandleDeleteGenerationTaskAsset,
+	)
+	apiRoutes.DELETE(
+		"/generation/tasks/:taskId",
+		handlers.GenerationTasks.HandleDeleteGenerationTask,
+	)
+	apiRoutes.GET(
+		"/generation/tasks/:taskId/result",
+		handlers.GenerationTasks.HandleGenerationVideo,
+	)
+}
+
+func registerProjectRoutes(projectRoutes *gin.RouterGroup, handlers Handlers) {
+	projectRoutes.PATCH("", handlers.Projects.HandleUpdateProject)
+	projectRoutes.DELETE("", handlers.Projects.HandleDeleteProject)
+	projectRoutes.POST("/archive", handlers.Projects.HandleArchiveProject)
+	projectRoutes.POST("/restore", handlers.Projects.HandleRestoreProject)
+	projectRoutes.DELETE("/permanent", handlers.Projects.HandlePermanentlyDeleteProject)
+	projectRoutes.GET("/billing/summary", handlers.Billing.HandleProjectBillingSummary)
+	projectRoutes.GET("/config", handlers.ProjectConfigs.HandleGetProjectConfig)
+	projectRoutes.PATCH("/config", handlers.ProjectConfigs.HandlePatchProjectConfig)
+	projectRoutes.GET("/brief", handlers.ProjectBriefs.HandleGetProjectBrief)
+	projectRoutes.PUT("/brief", handlers.ProjectBriefs.HandlePutProjectBrief)
+	projectRoutes.GET("/assets", handlers.ProjectAssets.HandleProjectAssets)
+	projectRoutes.POST("/assets", handlers.ProjectAssets.HandleUploadProjectAsset)
+	projectRoutes.GET("/assets/:assetId/content", handlers.ProjectAssets.HandleProjectAssetContent)
+	projectRoutes.PUT("/assets/:assetId", handlers.ProjectAssets.HandleUpdateProjectAsset)
+	projectRoutes.DELETE("/assets/:assetId", handlers.ProjectAssets.HandleDeleteProjectAsset)
+	projectRoutes.GET("/media-assets", handlers.MediaAssets.HandleProjectMediaAssets)
+	projectRoutes.POST("/media-assets", handlers.MediaAssets.HandleUploadProjectMediaAsset)
+	projectRoutes.GET("/media-assets/:assetId/content", handlers.MediaAssets.HandleProjectMediaAssetContent)
+	projectRoutes.GET("/media-assets/:assetId/poster", handlers.MediaAssets.HandleProjectMediaAssetPoster)
+	projectRoutes.PUT("/media-assets/:assetId", handlers.MediaAssets.HandleUpdateProjectMediaAsset)
+	projectRoutes.DELETE("/media-assets/:assetId", handlers.MediaAssets.HandleDeleteProjectMediaAsset)
+	projectRoutes.GET(
+		"/generation/selected-assets",
+		handlers.GenerationTasks.HandleSelectedGenerationAssets,
+	)
+	projectRoutes.POST(
+		"/generation/selected-assets",
+		handlers.GenerationTasks.HandleUpdateSelectedGenerationAsset,
+	)
+	projectRoutes.DELETE(
+		"/generation/selected-assets/:selectedAssetId",
+		handlers.GenerationTasks.HandleDeleteSelectedGenerationAsset,
+	)
+	projectRoutes.GET("/canon", handlers.Canon.HandleList)
+	projectRoutes.POST("/canon/sync", handlers.Canon.HandleSync)
+	projectRoutes.POST("/canon/:canonId/variants", handlers.Canon.HandleCreateVariant)
+	projectRoutes.POST("/canon/:canonId/references", handlers.Canon.HandleBindReference)
+	projectRoutes.PATCH("/canon/:canonId/status", handlers.Canon.HandleUpdateStatus)
+	projectRoutes.GET("/shot-manifests", handlers.ShotManifests.HandleList)
+	projectRoutes.POST("/shot-manifests/sync", handlers.ShotManifests.HandleSync)
+	projectRoutes.PUT("/shot-manifests", handlers.ShotManifests.HandleUpsert)
+	projectRoutes.POST("/shot-manifests/:shotId/compile", handlers.ShotManifests.HandleCompile)
+	registerWorkspaceRoutes(projectRoutes, handlers)
+	registerAgentRoutes(projectRoutes, handlers)
+	registerProjectGenerationNotificationRoutes(projectRoutes, handlers.GenerationTasks)
+}
+
+func registerWorkspaceRoutes(projectRoutes *gin.RouterGroup, handlers Handlers) {
+	projectRoutes.GET("/workspace/state", handlers.Workspace.HandleGetWorkspaceState)
+	projectRoutes.GET("/workspace/events", handlers.WorkspaceEvents.HandleWorkspaceEvents)
+	projectRoutes.PUT("/workspace/state", handlers.Workspace.HandlePutWorkspaceState)
+	projectRoutes.GET("/workspace/folders", handlers.Workspace.HandleListDocumentFolders)
+	projectRoutes.POST("/workspace/folders", handlers.Workspace.HandleCreateDocumentFolder)
+	projectRoutes.PATCH(
+		"/workspace/folders/:folderId",
+		handlers.Workspace.HandleUpdateDocumentFolder,
+	)
+	projectRoutes.DELETE(
+		"/workspace/folders/:folderId",
+		handlers.Workspace.HandleDeleteDocumentFolder,
+	)
+	projectRoutes.GET("/workspace/documents", handlers.Workspace.HandleListWorkspaceDocuments)
+	projectRoutes.POST("/workspace/documents", handlers.Workspace.HandleCreateWorkspaceDocument)
+	projectRoutes.GET("/workspace/resources", handlers.Workspace.HandleListWorkspaceDocumentResources)
+	projectRoutes.GET(
+		"/workspace/storyboard-video-resources",
+		handlers.GenerationTasks.HandleStoryboardVideoResources,
+	)
+	projectRoutes.GET("/workspace/sections", handlers.Workspace.HandleListProjectSections)
+	projectRoutes.POST("/workspace/sections/reconcile", handlers.Workspace.HandleReconcileProjectSections)
+	projectRoutes.GET(
+		"/workspace/documents/:documentId/history",
+		handlers.Workspace.HandleListDocumentHistory,
+	)
+	projectRoutes.GET(
+		"/workspace/documents/:documentId/history/:commitHash",
+		handlers.Workspace.HandleGetDocumentHistoryVersion,
+	)
+	projectRoutes.GET(
+		"/workspace/documents/:documentId/history/:commitHash/diff",
+		handlers.Workspace.HandleGetDocumentHistoryDiff,
+	)
+	projectRoutes.POST(
+		"/workspace/documents/:documentId/history/:commitHash/restore",
+		handlers.Workspace.HandleRestoreDocumentHistoryVersion,
+	)
+	projectRoutes.GET(
+		"/workspace/documents/:documentId",
+		handlers.Workspace.HandleGetWorkspaceDocument,
+	)
+	projectRoutes.PATCH(
+		"/workspace/documents/:documentId/section-mention",
+		handlers.Workspace.HandleUpdateWorkspaceDocumentSectionMention,
+	)
+	projectRoutes.PATCH(
+		"/workspace/documents/:documentId",
+		handlers.Workspace.HandleUpdateWorkspaceDocument,
+	)
+	projectRoutes.DELETE(
+		"/workspace/documents/:documentId",
+		handlers.Workspace.HandleDeleteWorkspaceDocument,
+	)
+	projectRoutes.GET(
+		"/workspace/episodes/:documentId",
+		handlers.Workspace.HandleGetEpisodeTimelineState,
+	)
+	projectRoutes.GET(
+		"/workspace/episodes/:documentId/resolved",
+		handlers.Workspace.HandleGetResolvedEpisodeTimelineState,
+	)
+	projectRoutes.GET(
+		"/workspace/episodes/:documentId/preview.mp4",
+		handlers.EpisodePreview.HandleEpisodePreviewStream,
+	)
+	projectRoutes.POST(
+		"/workspace/episodes/:documentId/jianying-draft",
+		handlers.JianyingDraft.HandleExportEpisodeJianyingDraft,
+	)
+	projectRoutes.PUT(
+		"/workspace/episodes/:documentId",
+		handlers.Workspace.HandlePutEpisodeTimelineState,
+	)
+}
+
+func registerAgentRoutes(projectRoutes *gin.RouterGroup, handlers Handlers) {
+	projectRoutes.GET(
+		"/agent/document-tool-approvals",
+		handlers.DocumentToolApprovals.HandleListDocumentToolApprovals,
+	)
+	projectRoutes.POST(
+		"/agent/document-tool-approvals/:approvalId/decision",
+		handlers.DocumentToolApprovals.HandleDecideDocumentToolApproval,
+	)
+	projectRoutes.GET(
+		"/agent/selections",
+		handlers.AgentSelections.HandleListAgentSelections,
+	)
+	projectRoutes.GET(
+		"/agent/selections/:selectionId",
+		handlers.AgentSelections.HandleGetAgentSelection,
+	)
+	projectRoutes.POST(
+		"/agent/selections/:selectionId/decision",
+		handlers.AgentSelections.HandleDecideAgentSelection,
+	)
+	projectRoutes.POST(
+		"/agent/sessions/:sessionId/permission-requests/:requestId/decision",
+		handlers.AgentPermissions.HandleDecideAgentPermission,
+	)
+	projectRoutes.GET("/agent/chat", handlers.AgentChat.HandleGetAgentChat)
+	projectRoutes.GET("/agent/sessions/:sessionId/chat", handlers.AgentChat.HandleGetAgentSessionChat)
+	projectRoutes.POST("/agent/chat/messages", handlers.AgentChat.HandleAppendAgentChat)
+	projectRoutes.DELETE("/agent/chat", handlers.AgentChat.HandleDeleteAgentChat)
+	projectRoutes.GET("/agent/runtime-config", handlers.AgentRuntime.HandleAgentRuntimeConfig)
+	projectRoutes.GET("/agent/sessions", handlers.AgentSessions.HandleListAgentSessions)
+	projectRoutes.POST("/agent/sessions", handlers.AgentSessions.HandleCreateSession)
+	projectRoutes.GET(
+		"/agent/sessions/:sessionId/status",
+		handlers.AgentSessions.HandleAgentSessionStatus,
+	)
+	projectRoutes.POST(
+		"/agent/sessions/:sessionId/cancel",
+		handlers.AgentSessions.HandleCancelAgentSession,
+	)
+	projectRoutes.POST(
+		"/agent/sessions/:sessionId/messages",
+		handlers.AgentMessages.HandleAgentMessage,
+	)
+	projectRoutes.GET("/agent/sessions/:sessionId/events", handlers.AgentEvents.HandleAgentEvents)
+	projectRoutes.POST(
+		"/agent/document-operations",
+		handlers.DocumentOperations.HandleDocumentOperations,
+	)
+	projectRoutes.POST(
+		"/agent/document-operations/test",
+		handlers.DocumentOperations.HandleTestDocumentOperations,
+	)
+}
+
+func registerGenerationNotificationRoutes(routes *gin.RouterGroup, handler httphandlers.GenerationTasks, includeIndividualReadRoute bool) {
+	routes.GET("/generation/notifications", handler.HandleGenerationNotifications)
+	routes.PATCH(
+		"/generation/notifications/read",
+		handler.HandleMarkAllGenerationNotificationsRead,
+	)
+	routes.GET(
+		"/generation/notifications/events",
+		handler.HandleGenerationNotificationEvents,
+	)
+	if !includeIndividualReadRoute {
+		return
+	}
+	routes.PATCH(
+		"/generation/notifications/:notificationId/read",
+		handler.HandleMarkGenerationNotificationRead,
+	)
+}
+
+func registerProjectGenerationNotificationRoutes(routes *gin.RouterGroup, handler httphandlers.GenerationTasks) {
+	routes.GET("/generation/notifications", handler.HandleProjectGenerationNotifications)
+	routes.PATCH(
+		"/generation/notifications/read",
+		handler.HandleMarkAllProjectGenerationNotificationsRead,
+	)
+	routes.GET(
+		"/generation/notifications/events",
+		handler.HandleProjectGenerationNotificationEvents,
+	)
+}

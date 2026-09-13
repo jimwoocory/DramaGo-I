@@ -1,0 +1,502 @@
+@layer theme {
+	:root {
+		/* ============================================================
+		   原始 Token · 调色板  PRIMITIVE / Palette
+		   只描述「值」;语义层一律通过 var() 引用,换肤只改这里。
+		   取值对齐设计稿 handoff(冷调蓝灰 + 品牌蓝 + 分类/功能色)。
+		   ============================================================ */
+
+		/* 中性 Neutral —— 冷调蓝灰,白 → 近黑 */
+		--slate-0: rgb(255 255 255);
+		--slate-25: rgb(250 251 253);
+		--slate-50: rgb(243 246 250);
+		--slate-100: rgb(237 241 247);
+		--slate-150: rgb(233 238 245);
+		--slate-200: rgb(230 235 242);
+		--slate-250: rgb(225 231 240);
+		--slate-300: rgb(214 222 234);
+		--slate-400: rgb(201 211 226);
+		--slate-500: rgb(154 166 186);
+		--slate-600: rgb(102 116 140);
+		--slate-650: rgb(86 98 120);
+		--slate-700: rgb(70 84 111);
+		--slate-800: rgb(46 58 82);
+		--slate-900: rgb(11 21 38);
+
+		/* 品牌蓝 Brand */
+		--blue-50: rgb(238 244 255);
+		--blue-100: rgb(230 238 255);
+		--blue-200: rgb(179 204 255);
+		--blue-500: rgb(77 137 255);
+		--blue-600: rgb(48 98 218);
+
+		/* 功能 / 分类 Functional & Category */
+		--green-50: rgb(233 247 242);
+		--green-200: rgb(180 237 216);
+		--green-500: rgb(55 194 141); /* 角色 / 成功 */
+		--amber-600: rgb(201 124 46); /* 场景 */
+		--orange-50: rgb(255 247 240);
+		--orange-200: rgb(255 217 179);
+		--violet-600: rgb(124 58 237); /* 分镜 */
+		--pink-500: rgb(242 77 138); /* 道具 / 强调 */
+		--red-50: rgb(255 240 240);
+		--red-200: rgb(255 179 179);
+		--red-500: rgb(229 72 77); /* 危险 */
+		--sky-50: rgb(223 244 255); /* 背景渐变收尾 */
+
+		/* —— 间距 Spacing(4px 节奏) —— */
+		--space-3xs: 0.0625rem; /* 1px */
+		--space-2xs: 0.125rem; /* 2px */
+		--space-xs: 0.25rem; /* 4px */
+		--space-sm: 0.5rem; /* 8px */
+		--space-md: 1rem; /* 16px */
+		--space-lg: 1.5rem; /* 24px */
+		--space-xl: 2rem; /* 32px */
+		--space-2xl: 3rem; /* 48px */
+		--space-3xl: 4rem; /* 64px */
+		/* 富文本 / 锁定徽标间距:吸附到 4px 网格(引用上面的档,消除原本的亚像素值) */
+		--space-json-inline-gap: var(--space-xs); /* 0.3125rem(5px) → 4px */
+		--space-rich-text-block-y: var(--space-sm); /* 0.55rem(8.8px) → 8px */
+		--space-rich-text-list-indent: var(--space-lg); /* 1.35rem(21.6px) → 24px */
+		--space-rich-text-list-item-y: var(--space-xs); /* 0.35rem(5.6px) → 4px */
+		--space-rich-text-list-item-indent: var(--space-2xs); /* 0.15rem(2.4px) → 2px */
+		--space-rich-text-inline-code-y: var(--space-2xs); /* 0.1rem(1.6px) → 2px */
+		--space-rich-text-table-cell-y: var(--space-sm); /* 0.45rem(7.2px) → 8px */
+		--space-rich-text-table-cell-x: var(--space-sm); /* 0.6rem(9.6px) → 8px */
+		--space-lock-badge-y: var(--space-3xs); /* 0.05rem(0.8px) → 1px */
+		--space-lock-badge-x: var(--space-xs); /* 0.35rem(5.6px) → 4px */
+
+		/* —— 圆角 Radius —— */
+		--radius-scale-none: 0;
+		--radius-scale-chip: 0.25rem; /* 4px  小标签 / 角标 */
+		--radius-scale-control: 0.375rem; /* 6px  按钮 / 输入框 / 列表项 */
+		--radius-scale-sm: 0.5rem;
+		--radius-scale-md: 0.5rem;
+		--radius-scale-lg: 0.625rem;
+		--radius-scale-panel: 0.8125rem; /* 13px 窗口 / 大面板 */
+		--radius-scale-xl: 0.75rem;
+		--radius-scale-2xl: 1.25rem;
+		--radius-scale-full: 9999px;
+
+		/* —— 阴影 Shadow —— */
+		--shadow-scale-sm: 0 1px 0 rgb(243 244 245 / 0.72);
+		--shadow-scale-md: 0 6px 12px rgb(174 181 196 / 0.16);
+		--shadow-scale-lg: 0 14px 32px rgb(174 181 196 / 0.2);
+		--shadow-scale-xl: 0 24px 48px rgb(174 181 196 / 0.24);
+		--shadow-scale-2xl: 0 32px 72px rgb(109 121 143 / 0.22);
+		--shadow-overlay: 0 28px 70px -36px rgb(109 121 143 / 0.5);
+		--shadow-toast: 0 22px 40px -24px rgb(109 121 143 / 0.45);
+		--shadow-agent-panel: 0 1.5rem 5rem rgb(0 0 0 / 0.24);
+
+		/* —— 动效 Motion —— */
+		--duration-scale-fast: 120ms;
+		--duration-scale-base: 180ms;
+		--easing-scale-standard: cubic-bezier(0.2, 0, 0, 1);
+
+		/* —— 边框 / 描边 / 模糊 / 层级 Misc —— */
+		--border-width-scale-sm: 1px;
+		--border-width-scale-md: 2px;
+		--outline-width-focus: var(--border-width-scale-md);
+		--outline-offset-focus: var(--border-width-scale-md);
+		--scrollbar-size: 0.375rem;
+		--blur-scale-xs: 0.125rem;
+		--blur-scale-lg: 1.5rem;
+		--z-index-modal: 80;
+		--inline-caret-align-offset: -0.125rem;
+		--alert-icon-title-offset: calc(var(--space-2xs) * -1);
+		--navigator-resize-line-width: var(--border-width-scale-sm);
+		--navigator-resize-line-width-active: var(--border-width-scale-md);
+		/* —— 尺寸 Sizing(布局维度原始值;按 px 命名,组件 token 统一引用,等值共用一档) —— */
+		--size-18: 1.125rem; /* 18px */
+		--size-20: 1.25rem; /* 20px */
+		--size-26: 1.625rem; /* 26px */
+		--size-36: 2.25rem; /* 36px */
+		--size-40: 2.5rem; /* 40px */
+		--size-44: 2.75rem; /* 44px */
+		--size-76: 4.75rem; /* 76px */
+		--size-80: 5rem; /* 80px */
+		--size-96: 6rem; /* 96px */
+		--size-104: 6.5rem; /* 104px */
+		--size-112: 7rem; /* 112px */
+		--size-160: 10rem; /* 160px */
+		--size-180: 11.25rem; /* 180px */
+		--size-196: 12.25rem; /* 196px */
+		--size-220: 13.75rem; /* 220px */
+		--size-224: 14rem; /* 224px */
+		--size-232: 14.5rem; /* 232px */
+		--size-252: 15.75rem; /* 252px */
+		--size-256: 16rem; /* 256px */
+		--size-260: 16.25rem; /* 260px */
+		--size-280: 17.5rem; /* 280px */
+		--size-288: 18rem; /* 288px */
+		--size-320: 20rem; /* 320px */
+		--size-340: 21.25rem; /* 340px */
+		--size-352: 22rem; /* 352px */
+		--size-384: 24rem; /* 384px */
+		--size-400: 25rem; /* 400px */
+		--size-420: 26.25rem; /* 420px */
+		--size-448: 28rem; /* 448px */
+		--size-544: 34rem; /* 544px */
+		--size-720: 45rem; /* 720px */
+		--size-960: 60rem; /* 960px */
+		--size-1280: 80rem; /* 1280px */
+		--size-1840: 115rem; /* 1840px */
+		--size-2460: 153.75rem; /* 2460px */
+
+		/* ============================================================
+		   组件 / 布局 tokens —— 全部引用原始层(尺寸 / 间距 / 圆角),不留裸数字。
+		   vh / % 为视口相对值,无对应原始档,保留原样。
+		   ============================================================ */
+		--workspace-sidebar-default-width: var(--size-260);
+		--workspace-sidebar-min-width: var(--size-220);
+		--workspace-sidebar-max-width: var(--size-420);
+		/* Match the drag-region height so sidebar content starts below the macOS traffic
+		   lights instead of colliding with them. */
+		--desktop-titlebar-offset: var(--size-44);
+		--desktop-drag-region-height: var(--size-44);
+		--desktop-traffic-light-safe-area: var(--size-76);
+		--settings-label-column-min: var(--size-160);
+		--settings-label-column-max: var(--size-220);
+		--settings-provider-column-min: var(--size-180);
+		--settings-provider-column-max: var(--size-260);
+		--settings-control-column-max: var(--size-320);
+		--search-dialog-offset-top: 9vh;
+		--search-dialog-max-height: 76vh;
+		--search-dialog-max-width: var(--size-720);
+		--search-dialog-results-min-height: var(--size-220);
+		--section-generation-dialog-height: 86vh;
+		--message-bubble-max-width: 88%;
+		--timeline-fit-min-width: var(--size-960);
+		--timeline-zoom-50-width: var(--size-1280);
+		--timeline-zoom-100-width: var(--size-1840);
+		--timeline-zoom-150-width: var(--size-2460);
+		--timeline-editor-height: var(--size-260);
+		--timeline-track-label-width: var(--size-104);
+		--debug-template-nav-width: var(--size-224);
+		--debug-template-level-width: var(--size-96);
+		--debug-agent-nav-width: var(--size-256);
+		--roles-skill-column-min: var(--size-288);
+		--roles-skill-column-max: var(--size-384);
+		--generate-sidebar-width: var(--size-448);
+		--generate-wide-sidebar-width: var(--size-544);
+		--generation-control-height: calc(var(--space-md) + var(--space-sm));
+		--generation-control-height-lg: calc(var(--space-md) + var(--space-sm) + var(--space-xs));
+		--generation-control-padding-x: var(--space-sm);
+		--generation-control-radius: var(--radius-scale-sm);
+		--generation-composer-padding: calc(var(--space-xs) + var(--space-2xs));
+		--generation-composer-gap: var(--space-xs);
+		--generation-composer-toolbar-gap: calc(var(--space-xs) + var(--space-2xs));
+		--generation-composer-textarea-min-height: calc(
+			var(--size-40) + var(--generation-composer-padding) + var(--generation-composer-padding)
+		);
+		--generation-composer-textarea-max-height: calc(
+			var(--size-180) + var(--generation-composer-padding) + var(--generation-composer-padding)
+		);
+		--generation-composer-textarea-height: var(--generation-composer-textarea-min-height);
+		--generation-composer-layer-min-width: var(--size-112);
+		--generation-popover-margin: calc(var(--space-sm) + var(--space-xs));
+		--generation-popover-radius: var(--radius-scale-sm);
+		--generation-popover-padding: var(--space-sm);
+		--generation-popover-padding-lg: calc(var(--space-sm) + var(--space-xs));
+		--generation-popover-gap: calc(var(--space-sm) + var(--space-2xs));
+		--generation-popover-max-inline: calc(
+			100vw - var(--generation-popover-margin) - var(--generation-popover-margin)
+		);
+		--generation-popover-max-block: calc(
+			100vh - var(--generation-popover-margin) - var(--generation-popover-margin)
+		);
+		--generation-model-popover-width: var(--size-352);
+		--generation-model-popover-height: var(--size-196);
+		--generation-model-popover-option-height: var(--generation-control-height-lg);
+		--generation-model-popover-version-column-max-width: var(--size-260);
+		--generation-model-popover-provider-column-min-width: var(--size-112);
+		--generation-primary-popover-width: var(--size-224);
+		--generation-primary-popover-height: var(--size-280);
+		--generation-primary-option-height: var(--space-xl);
+		--generation-size-popover-width: var(--size-400);
+		--generation-size-popover-height: var(--size-252);
+		--generation-size-ratio-option-height: calc(var(--space-xl) + var(--space-md));
+		--generation-size-resolution-option-height: var(--generation-control-height-lg);
+		--generation-size-preview-control-height: var(--space-xl);
+		--generation-size-preview-link-size: var(--generation-control-height-lg);
+		--generation-size-ratio-glyph-min: var(--space-sm);
+		--generation-size-ratio-glyph-max: var(--size-18);
+		--generation-count-popover-width: var(--size-224);
+		--generation-count-popover-height: var(--size-340);
+		--generation-count-option-height: var(--space-xl);
+		--generation-other-popover-width: var(--size-288);
+		--generation-other-popover-height: var(--size-232);
+		--generation-other-control-height: var(--generation-control-height-lg);
+		--generation-other-control-min-width: var(--size-80);
+		--generation-other-number-width: var(--size-80);
+		--generation-other-text-width: var(--size-96);
+		--generation-other-switch-width: var(--size-36);
+		--generation-other-switch-height: var(--size-20);
+		--generation-other-switch-thumb-size: var(--space-md);
+		--generation-other-switch-thumb-offset: var(--space-2xs);
+		--generation-other-switch-thumb-checked-x: var(--space-md);
+		--markdown-editor-min-height: var(--size-448);
+		--dialog-inline-gutter: var(--space-xl);
+
+		/* —— 字体 Typography(字体族 / 字号 / 字重 / 行高) —— */
+		--font-family-sans:
+			"MILan Pro VF", "MILanProVF", "PingFang SC", "Avenir Next", "Segoe UI", "Helvetica Neue",
+			"Arial", "Noto Sans", sans-serif;
+		--font-family-mono:
+			"SF Mono", "Monaco", "Inconsolata", "Roboto Mono", "Source Code Pro", monospace;
+
+		--font-size-3xs: 0.5625rem;
+		--font-size-2xs: 0.625rem;
+		--font-size-caption: 0.6875rem;
+		--font-size-xs: 0.75rem;
+		--font-size-sm: 0.875rem;
+		--font-size-md: 1rem;
+		--font-size-lg: 1.125rem;
+		--font-size-xl: 1.25rem;
+		--font-size-2xl: 1.5rem;
+		--font-size-3xl: 1.875rem;
+		--font-size-4xl: 2.25rem;
+		--font-size-5xl: 3rem;
+		--font-size-6xl: 3.75rem;
+
+		--font-weight-scale-normal: 400;
+		--font-weight-scale-medium: 500;
+		--font-weight-scale-semibold: 600;
+		--font-weight-scale-bold: 700;
+
+		--line-height-tight: 1.25;
+		--line-height-normal: 1.5;
+		--line-height-relaxed: 1.625;
+		--line-height-loose: 2;
+
+		/* ============================================================
+		   语义 Token · 浅色  SEMANTIC / Light
+		   按「用途」命名,全部引用原始层;组件 / 工具类只用语义层。
+		   ============================================================ */
+		--background: var(--slate-50);
+		--foreground: var(--slate-900);
+		--card: var(--slate-0);
+		--card-foreground: var(--slate-900);
+		--popover: var(--slate-0);
+		--popover-foreground: var(--slate-900);
+		--primary: var(--blue-500);
+		--primary-foreground: var(--slate-0);
+		--secondary: var(--blue-100);
+		--secondary-foreground: var(--blue-600);
+		--muted: var(--slate-100);
+		--muted-foreground: var(--slate-600);
+		--accent: var(--blue-50);
+		--accent-foreground: var(--blue-600);
+		--destructive: var(--red-500);
+		--destructive-foreground: var(--slate-0);
+		--border: var(--slate-200);
+		--input: var(--slate-300);
+		--ring: var(--blue-500);
+		--success-surface: var(--green-50);
+		--success-border: var(--green-200);
+		--success-foreground: var(--green-500);
+		--info-surface: var(--blue-50);
+		--info-border: var(--blue-200);
+		--info-foreground: var(--blue-500);
+		--warning-surface: var(--orange-50);
+		--warning-border: var(--orange-200);
+		--warning-foreground: var(--amber-600);
+		--error-surface: var(--red-50);
+		--error-border: var(--red-200);
+		--error-foreground: var(--red-500);
+		--doc-category-screenplay: var(--info-foreground);
+		--doc-category-character: var(--success-foreground);
+		--doc-category-scene: var(--warning-foreground);
+		--doc-category-prop: var(--pink-500);
+		--doc-category-storyboard: var(--violet-600);
+		--doc-category-reference: var(--muted-foreground);
+
+		--surface-subtle: color-mix(in srgb, var(--slate-50) 84%, transparent);
+		--surface-raised: var(--slate-0);
+		--text-muted: var(--muted-foreground);
+		--app-background-image: linear-gradient(
+			180deg,
+			var(--slate-50) 0%,
+			var(--slate-50) 70%,
+			var(--sky-50) 100%
+		);
+
+		--ide-titlebar: var(--slate-50);
+		--ide-titlebar-foreground: var(--slate-900);
+		--ide-activity-bar: var(--slate-100);
+		--ide-activity-bar-foreground: var(--slate-600);
+		--ide-sidebar: var(--slate-50);
+		--ide-sidebar-foreground: var(--slate-650);
+		--ide-editor: var(--slate-0);
+		--ide-editor-foreground: var(--slate-900);
+		--ide-panel: var(--slate-50);
+		--ide-panel-foreground: var(--slate-900);
+		--ide-toolbar: var(--slate-50);
+		--ide-toolbar-foreground: var(--slate-650);
+		--ide-statusbar: var(--blue-500);
+		--ide-statusbar-foreground: var(--slate-0);
+		--ide-list-hover: var(--blue-50);
+		--ide-list-active: var(--blue-100);
+		--ide-list-active-foreground: var(--blue-500);
+		--ide-selection: var(--blue-200);
+		--ide-gutter: var(--slate-200);
+		--ide-preview: var(--slate-100);
+		--toast-action-foreground: var(--primary-foreground);
+		--timeline-video: var(--info-surface);
+		--timeline-video-border: var(--info-border);
+		--timeline-video-foreground: var(--info-foreground);
+		--timeline-voiceover: var(--success-surface);
+		--timeline-voiceover-border: var(--success-border);
+		--timeline-voiceover-foreground: var(--success-foreground);
+		--timeline-caption: var(--warning-surface);
+		--timeline-caption-border: var(--warning-border);
+		--timeline-caption-foreground: var(--warning-foreground);
+		--timeline-music: var(--secondary);
+		--timeline-music-border: var(--border);
+		--timeline-music-foreground: var(--secondary-foreground);
+		--timeline-asset: var(--error-surface);
+		--timeline-asset-border: var(--error-border);
+		--timeline-asset-foreground: var(--error-foreground);
+		--rjv-background-color: var(--ide-editor);
+		--rjv-key-string: var(--info-foreground);
+		--rjv-type-string: var(--success-foreground);
+		--rjv-string-color: var(--success-foreground);
+		--rjv-number-color: var(--warning-foreground);
+		--rjv-boolean-color: var(--error-foreground);
+		--rjv-null-color: var(--muted-foreground);
+	}
+
+	:root[data-theme="dark"] {
+		/* ===== 原始 Token · 暗色专用调色板(深色中性 ink + 暗色强调) ===== */
+		--ink-100: rgb(223 230 237);
+		--ink-200: rgb(189 194 201);
+		--ink-300: rgb(167 171 181);
+		--ink-500: rgb(72 75 82);
+		--ink-600: rgb(53 56 61);
+		--ink-700: rgb(44 47 51);
+		--ink-750: rgb(39 41 46);
+		--ink-800: rgb(35 37 41);
+		--ink-900: rgb(25 27 28);
+		--blue-250: rgb(188 215 250);
+		--blue-300: rgb(146 184 245);
+		--blue-400: rgb(62 116 224);
+		--blue-900: rgb(43 72 130);
+		--blue-950: rgb(32 48 79);
+		--navy-950: rgb(32 40 61);
+		--green-300: rgb(102 218 172);
+		--green-700: rgb(43 114 88);
+		--green-950: rgb(25 46 39);
+		--amber-300: rgb(232 174 107);
+		--amber-800: rgb(126 86 46);
+		--amber-950: rgb(51 38 27);
+		--red-300: rgb(232 112 107);
+		--red-600: rgb(220 68 69);
+		--red-800: rgb(126 46 46);
+		--red-950: rgb(51 27 29);
+		--pink-300: rgb(244 114 182);
+		--violet-300: rgb(167 139 250);
+
+		/* 暗色阴影不沿用浅色高光，避免控件底边出现亮线。 */
+		--shadow-scale-sm: 0 1px 0 rgb(0 0 0 / 0.28);
+		--shadow-scale-md: 0 8px 18px rgb(0 0 0 / 0.24);
+		--shadow-scale-lg: 0 18px 42px rgb(0 0 0 / 0.3);
+		--shadow-scale-xl: 0 28px 58px rgb(0 0 0 / 0.34);
+		--shadow-scale-2xl: 0 36px 78px rgb(0 0 0 / 0.38);
+		--shadow-overlay: 0 28px 70px -36px rgb(0 0 0 / 0.72);
+		--shadow-toast: 0 22px 40px -24px rgb(0 0 0 / 0.72);
+		--shadow-agent-panel: 0 1.5rem 5rem rgb(0 0 0 / 0.34);
+
+		/* ===== 语义 Token · 暗色(引用上面的暗色原始值) ===== */
+		--background: var(--ink-900);
+		--foreground: var(--ink-100);
+		--card: var(--ink-800);
+		--card-foreground: var(--ink-100);
+		--popover: var(--ink-800);
+		--popover-foreground: var(--ink-100);
+		--primary: var(--blue-400);
+		--primary-foreground: var(--slate-0);
+		--secondary: var(--blue-950);
+		--secondary-foreground: var(--blue-250);
+		--muted: var(--ink-700);
+		--muted-foreground: var(--ink-300);
+		--accent: var(--navy-950);
+		--accent-foreground: var(--blue-300);
+		--destructive: var(--red-600);
+		--destructive-foreground: var(--slate-0);
+		--border: var(--ink-600);
+		--input: var(--ink-500);
+		--ring: var(--blue-400);
+		--success-surface: var(--green-950);
+		--success-border: var(--green-700);
+		--success-foreground: var(--green-300);
+		--info-surface: var(--blue-950);
+		--info-border: var(--blue-900);
+		--info-foreground: var(--blue-300);
+		--warning-surface: var(--amber-950);
+		--warning-border: var(--amber-800);
+		--warning-foreground: var(--amber-300);
+		--error-surface: var(--red-950);
+		--error-border: var(--red-800);
+		--error-foreground: var(--red-300);
+		--doc-category-screenplay: var(--info-foreground);
+		--doc-category-character: var(--success-foreground);
+		--doc-category-scene: var(--warning-foreground);
+		--doc-category-prop: var(--pink-300);
+		--doc-category-storyboard: var(--violet-300);
+		--doc-category-reference: var(--muted-foreground);
+
+		--surface-subtle: color-mix(in srgb, var(--ink-800) 78%, transparent);
+		--surface-raised: var(--ink-800);
+		--text-muted: var(--muted-foreground);
+		--app-background-image: linear-gradient(
+			180deg,
+			var(--ink-900) 0%,
+			var(--ink-900) 70%,
+			var(--blue-950) 100%
+		);
+
+		--ide-titlebar: var(--ink-800);
+		--ide-titlebar-foreground: var(--ink-100);
+		--ide-activity-bar: var(--ink-700);
+		--ide-activity-bar-foreground: var(--ink-300);
+		--ide-sidebar: var(--ink-800);
+		--ide-sidebar-foreground: var(--ink-200);
+		--ide-editor: var(--ink-800);
+		--ide-editor-foreground: var(--ink-100);
+		--ide-panel: var(--ink-700);
+		--ide-panel-foreground: var(--ink-100);
+		--ide-toolbar: var(--ink-750);
+		--ide-toolbar-foreground: var(--ink-200);
+		--ide-statusbar: var(--blue-400);
+		--ide-statusbar-foreground: var(--slate-0);
+		--ide-list-hover: var(--navy-950);
+		--ide-list-active: var(--blue-950);
+		--ide-list-active-foreground: var(--blue-300);
+		--ide-selection: var(--blue-900);
+		--ide-gutter: var(--ink-600);
+		--ide-preview: var(--ink-900);
+		--toast-action-foreground: var(--primary-foreground);
+		--timeline-video: var(--info-surface);
+		--timeline-video-border: var(--info-border);
+		--timeline-video-foreground: var(--info-foreground);
+		--timeline-voiceover: var(--success-surface);
+		--timeline-voiceover-border: var(--success-border);
+		--timeline-voiceover-foreground: var(--success-foreground);
+		--timeline-caption: var(--warning-surface);
+		--timeline-caption-border: var(--warning-border);
+		--timeline-caption-foreground: var(--warning-foreground);
+		--timeline-music: var(--secondary);
+		--timeline-music-border: var(--border);
+		--timeline-music-foreground: var(--secondary-foreground);
+		--timeline-asset: var(--error-surface);
+		--timeline-asset-border: var(--error-border);
+		--timeline-asset-foreground: var(--error-foreground);
+		--rjv-background-color: var(--ide-editor);
+		--rjv-key-string: var(--info-foreground);
+		--rjv-type-string: var(--success-foreground);
+		--rjv-string-color: var(--success-foreground);
+		--rjv-number-color: var(--warning-foreground);
+		--rjv-boolean-color: var(--error-foreground);
+		--rjv-null-color: var(--muted-foreground);
+	}
+}

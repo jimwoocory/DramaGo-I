@@ -1,0 +1,502 @@
+import type React from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import useSWR from "swr";
+import type {
+	GenerationAsset,
+	GenerationNotificationOpenTarget,
+	SelectedGenerationAsset,
+} from "@/domains/generation/api/generation";
+import { projectGenerationConversation } from "@/domains/generation/api/generation";
+import { useStoryboardReelSelection } from "@/domains/generation/hooks/useStoryboardReelSelection";
+import { getProjects, projectsKey } from "@/domains/projects/api/projects";
+import { DocumentMentionHoverPopover } from "@/domains/documents/components/DocumentMentionHoverPopover";
+import { createDocumentMentionExtension } from "@/domains/documents/components/extensions/document-mention";
+import type { MarkdownSectionContext } from "@/domains/documents/components/MarkdownHybridEditor";
+import { sectionGenerationKindScopeId } from "@/domains/documents/components/useDocumentSectionGenerationContext";
+import { createSectionGenerationPrompt } from "@/domains/documents/lib/section-generation-prompt";
+import {
+	buildMentionPreviewReferences,
+	buildMentionReferenceInputs,
+	extractDocumentImageAssets,
+	filterMentionReferenceMedia,
+	resolveMentionPayloadWithSelectedAssets,
+	type MentionPreviewReferences,
+	uniqueResolvedMention,
+} from "@/domains/documents/lib/mention-generation-references";
+import {
+	parseMentionsFromMarkdown,
+	resolveMentionPayload,
+} from "@/domains/documents/lib/mention-resolver";
+import { normalizeHeadingText, stripSectionIdCommentLines } from "@/domains/documents/lib/sections";
+import { type MarkdownDocument, useDocumentsStore } from "@/domains/documents/stores";
+import {
+	readStoryboardLaneSources,
+	type StoryboardLaneSource,
+} from "@/domains/episode/lib/storyboard-shots";
+import { formatTimelineTime, type Episode, type TimelineClip } from "@/domains/episode/lib/sample";
+import type {
+	MediaGenerationWorkspaceProps,
+	PromptEditorProps,
+} from "@/domains/generation/components/MediaGenerationWorkspace";
+import { PromptEditor } from "@/domains/generation/components/PromptEditor";
+import { generationAssetSource } from "@/domains/generation/hooks/useGenerationWorkspace.helpers";
+import type { MediaAsset } from "@/domains/workspace/api/media";
+import type { ProjectAsset } from "@/domains/workspace/api/project-assets";
+
+interface EpisodeVideoGenerationDialogProps {
+	documentId?: string;
+	documentTitle?: string;
+	episode: Episode;
+	onGeneratedVideoReady?: (clipId: string, videoUrl: string | null) => void;
+	onOpenChange: (open: boolean) => void;
+	onOpenReferenceGeneration?: (section: MarkdownSectionContext) => void;
+	open: boolean;
+	projectId?: string;
+	selectedClip: TimelineClip | null;
+	selectedGenerationAssets?: SelectedGenerationAsset[];
+}
+
+export interface EpisodeVideoGenerationContext {
+	blockId: string;
+	headingLevel: number;
+	headingOccurrence: number;
+	headingText: string;
+	plainText: string;
+	prompt: string;
+	sourceMarkdown: string;
+}
+
+export interface EpisodeVideoSourceSection {
+	blockId?: string;
+	bodyMarkdown: string;
+	headingLevel: number;
+	headingOccurrence: number;
+	headingText: string;
+	markdown: string;
+	plainText: string;
+}
+
+export const episodeVideoGenerationTitleId = "episode-video-generation-title";
+
+// 剪辑时间线的视频生成「请求」：把片段 → 分镜 section → prompt → 会话/历史 scope
+// 全部推导出来，喂给唯一的 VideoGenerationDialog 的 workspaceProps 直通模式。
+// 它不再是一个独立弹窗组件，只是一个领域请求构造 hook。
+export interface EpisodeVideoGenerationRequest {
+	onOpenChange: (open: boolean) => void;
+	open: boolean;
+	title: string;
+	workspaceProps: Omit<MediaGenerationWorkspaceProps, "kind">;
+}
+
+const mentionSearchMarkdown = (sourceMarkdown: string, promptMarkdown: string) =>
+	promptMarkdown.trim() ? `${sourceMarkdown}\n\n${promptMarkdown}` : "";
+
+export const useEpisodeVideoGenerationRequest = ({
+	documentId,
+	documentTitle,
+	episode,
+	onGeneratedVideoReady,
+	onOpenChange,
+	onOpenReferenceGeneration,
+	open,
+	projectId,
+	selectedClip,
+	selectedGenerationAssets,
+}: EpisodeVideoGenerationDialogProps): EpisodeVideoGenerationRequest => {
+	const allDocuments = useDocumentsStore((state) => state.documents);
+	const allAssets = useDocumentsStore((state) => state.assets);
+	const sourceDocument = useMemo(
+		() => allDocuments.find((document) => document.id === documentId?.trim()) ?? null,
+		[allDocuments, documentId],
+	);
+	const sourceSection = useMemo(
+		() =>
+			findEpisodeVideoSourceSection(
+				sourceDocument?.content ?? "",
+				selectedClip,
+				sourceDocument?.id ?? documentId,
+			),
+		[sourceDocument?.content, sourceDocument?.id, documentId, selectedClip],
+	);
+	const generationContext = useMemo(
+		() => buildEpisodeVideoContext(episode, selectedClip, sourceSection),
+		[episode, selectedClip, sourceSection],
+	);
+	const [removedMentionMediaKeys, setRemovedMentionMediaKeys] = useState<string[]>([]);
+	const removedMentionMediaKeySet = useMemo(
+		() => new Set(removedMentionMediaKeys),
+		[removedMentionMediaKeys],
+	);
+	const mediaAssets = useMemo(
+		() =>
+			allDocuments.flatMap((document) =>
+				extractDocumentImageAssets(document.id, document.content ?? ""),
+			),
+		[allDocuments],
+	);
+	const latestMentionPreviewRef = useRef<MentionPreviewReferences>({
+		assetMediaKeys: {},
+		assetMentionKeys: {},
+		badges: {},
+		references: [],
+	});
+	// 项目内的视频生成统一归到「项目级命名会话」，让创作台可见；非项目场景回退到按分镜片段的 scope。
+	const normalizedProjectId = projectId?.trim() ?? "";
+	const { data: projectsData } = useSWR(normalizedProjectId ? projectsKey : null, getProjects);
+	const normalizedDocumentId = documentId?.trim() ?? "";
+	// 成片选中契约（列表 / 画布 / 预览共用）：reel 的视频成片 = 该 section 下已选的 video 资源。
+	const reelSelection = useStoryboardReelSelection(
+		normalizedProjectId,
+		{
+			documentId: normalizedDocumentId,
+			sectionId: sourceSection?.blockId ?? "",
+			title: generationContext.headingText,
+		},
+		{ selectedGenerationAssets },
+	);
+	const mentionSelectedGenerationAssets = reelSelection.selectedGenerationAssets;
+	const canSelectProjectResource = reelSelection.canSelect;
+	const projectName = useMemo(
+		() => projectsData?.projects.find((project) => project.id === normalizedProjectId)?.name ?? "",
+		[projectsData, normalizedProjectId],
+	);
+	const projectConversation = useMemo(
+		() => projectGenerationConversation(projectId, "video", projectName),
+		[projectId, projectName],
+	);
+	const conversationScopeId = projectConversation?.conversationScopeId ?? generationContext.blockId;
+	// 本地乐观缓存按分镜片段隔离；项目级会话里用 sectionId(=blockId) 过滤出当前片段的服务端任务。
+	const historyScopeId = generationContext.blockId;
+	const sectionId = projectConversation ? generationContext.blockId : undefined;
+	const documentContext = useMemo(() => {
+		const sourceSectionBlockId = sourceSection?.blockId;
+		if (!normalizedDocumentId || !sourceSectionBlockId) return undefined;
+
+		return {
+			...(normalizedProjectId ? { projectId: normalizedProjectId } : {}),
+			documentId: normalizedDocumentId,
+			sectionId: sourceSectionBlockId,
+		};
+	}, [normalizedDocumentId, normalizedProjectId, sourceSection?.blockId]);
+	const resolveAllMentionsFromPrompt = useCallback(
+		(promptMarkdown: string) =>
+			parseMentionsFromMarkdown(
+				mentionSearchMarkdown(generationContext.sourceMarkdown, promptMarkdown),
+			)
+				.map((reference) =>
+					resolveMentionPayloadWithSelectedAssets(
+						reference,
+						allDocuments,
+						allAssets,
+						mentionSelectedGenerationAssets,
+					),
+				)
+				.filter(uniqueResolvedMention),
+		[allAssets, allDocuments, generationContext.sourceMarkdown, mentionSelectedGenerationAssets],
+	);
+	const resolveActiveMentionsFromPrompt = useCallback(
+		(promptMarkdown: string) =>
+			resolveAllMentionsFromPrompt(promptMarkdown).map((mention) =>
+				filterMentionReferenceMedia(mention, removedMentionMediaKeySet),
+			),
+		[removedMentionMediaKeySet, resolveAllMentionsFromPrompt],
+	);
+	const getMentionPreview = useCallback(
+		(promptMarkdown: string) => {
+			const mentions = resolveActiveMentionsFromPrompt(promptMarkdown);
+			const preview = buildMentionPreviewReferences(mentions, mediaAssets);
+
+			latestMentionPreviewRef.current = preview;
+
+			return { mentions, preview };
+		},
+		[mediaAssets, resolveActiveMentionsFromPrompt],
+	);
+	const getMentionReferenceInputs = useCallback(
+		(promptMarkdown: string) =>
+			buildMentionReferenceInputs(resolveActiveMentionsFromPrompt(promptMarkdown), {
+				includeSelectedAudios: true,
+			}),
+		[resolveActiveMentionsFromPrompt],
+	);
+	const removePreviewReferenceAsset = useCallback((asset: MediaAsset) => {
+		const mediaKey = latestMentionPreviewRef.current.assetMediaKeys[asset.id];
+		if (!mediaKey) return;
+
+		setRemovedMentionMediaKeys((current) =>
+			current.includes(mediaKey) ? current : [...current, mediaKey],
+		);
+	}, []);
+	const notificationTarget = useMemo<GenerationNotificationOpenTarget | undefined>(() => {
+		const normalizedProjectId = projectId?.trim();
+		const normalizedDocumentId = documentId?.trim();
+		if (!normalizedProjectId || !normalizedDocumentId) return undefined;
+
+		return {
+			kind: "document-section",
+			projectId: normalizedProjectId,
+			documentId: normalizedDocumentId,
+			documentTitle: documentTitle?.trim() || episode.title,
+			section: {
+				blockId: generationContext.blockId,
+				documentId: normalizedDocumentId,
+				headingLevel: generationContext.headingLevel,
+				headingOccurrence: generationContext.headingOccurrence,
+				headingText: generationContext.headingText,
+				markdown: generationContext.sourceMarkdown,
+				plainText: generationContext.plainText,
+				prompt: generationContext.prompt,
+			},
+		};
+	}, [documentId, documentTitle, episode.title, generationContext, projectId]);
+	const toggleGeneratedVideo = useCallback(
+		(asset: GenerationAsset, selected: boolean) => {
+			if (!canSelectProjectResource || !selectedClip) return;
+
+			const videoUrl = firstVideoAssetSource([asset]);
+			if (!videoUrl) return;
+
+			onGeneratedVideoReady?.(selectedClip.id, selected ? videoUrl : null);
+		},
+		[canSelectProjectResource, onGeneratedVideoReady, selectedClip],
+	);
+
+	useEffect(() => {
+		setRemovedMentionMediaKeys([]);
+	}, [generationContext.blockId, generationContext.sourceMarkdown]);
+
+	return {
+		onOpenChange,
+		open,
+		title: `生成视频素材 · ${selectedClip?.title ?? episode.title}`,
+		workspaceProps: {
+			className: "min-h-0 flex-1",
+			emptyResultText: "生成后会在这里显示可预览的视频素材。",
+			conversationId: projectConversation?.conversationId,
+			conversationScopeId,
+			conversationTitle: projectConversation?.conversationTitle,
+			documentContext,
+			historyScopeId,
+			sectionId,
+			assetTitle: generationContext.headingText,
+			taskType: "storyboard",
+			initialPrompt: generationContext.prompt,
+			modelPreferenceScopeId: sectionGenerationKindScopeId(conversationScopeId, "video"),
+			notificationTarget,
+			persistAssetSelection: true,
+			promptPlaceholder: "描述当前组的视频镜头、运动、机位、时长、画幅和质量",
+			projectId,
+			extraReferenceAssetIds: (prompt) => getMentionReferenceInputs(prompt).assetIds,
+			extraReferenceBindings: (prompt) => getMentionReferenceInputs(prompt).bindings,
+			extraReferenceUrls: (prompt) => getMentionReferenceInputs(prompt).urls,
+			referenceBadges: (prompt) => getMentionPreview(prompt).preview.badges,
+			referencePreviewAssets: (prompt) => getMentionPreview(prompt).preview.references,
+			renderPromptEditor: (props) => (
+				<EpisodeVideoPromptMentionEditor
+					{...props}
+					allAssets={allAssets}
+					allDocuments={allDocuments}
+					onGenerateReference={onOpenReferenceGeneration}
+					projectId={normalizedProjectId || undefined}
+					selectedGenerationAssets={mentionSelectedGenerationAssets}
+				/>
+			),
+			submitLabel: "生成视频",
+			uploadIdPrefix: "episode-video-generation",
+			selectedAssetKeys: reelSelection.selectedAssetKeys,
+			selectedAssetResourceId: reelSelection.selectedAssetResourceId,
+			selectedAssetResourceType: reelSelection.selectedAssetResourceType,
+			selectedAssetSourceDocumentId: reelSelection.selectedAssetSourceDocumentId,
+			selectedAssetTitle: generationContext.headingText,
+			viewMode: "history",
+			onToggleAsset: canSelectProjectResource ? toggleGeneratedVideo : undefined,
+			onRemoveReferencePreview: removePreviewReferenceAsset,
+		},
+	};
+};
+
+export const buildEpisodeVideoContext = (
+	episode: Episode,
+	selectedClip: TimelineClip | null,
+	sourceSection: EpisodeVideoSourceSection | null,
+): EpisodeVideoGenerationContext => {
+	const blockId =
+		sourceSection?.blockId ?? `episode-video:${episode.id}:${selectedClip?.id ?? "episode"}`;
+	const headingText = sourceSection?.headingText ?? selectedClip?.title.trim() ?? episode.title;
+	const plainText = sourceSection?.plainText ?? selectedClip?.content.trim() ?? episode.title;
+
+	return {
+		blockId,
+		headingLevel: sourceSection?.headingLevel ?? 2,
+		headingOccurrence: sourceSection?.headingOccurrence ?? 1,
+		headingText,
+		plainText,
+		prompt: buildEpisodeVideoPrompt(episode, selectedClip, sourceSection),
+		sourceMarkdown:
+			sourceSection?.markdown ?? [`## ${headingText}`, "", plainText].filter(Boolean).join("\n"),
+	};
+};
+
+export const buildEpisodeVideoPrompt = (
+	episode: Episode,
+	selectedClip: TimelineClip | null,
+	sourceSection: EpisodeVideoSourceSection | null,
+) => {
+	if (!selectedClip) {
+		return [
+			`为《${episode.title}》生成一段可用于剪辑工作台预览的视频镜头。`,
+			`画幅比例：${episode.aspectRatio}`,
+			`剧集时长：${formatTimelineTime(episode.duration)}`,
+			"要求：镜头运动自然，画面清晰，适合作为时间线中的视频素材。",
+		].join("\n");
+	}
+
+	const sourcePrompt = stripEpisodeVideoPromptInternalReferences(
+		sourceSection?.markdown || selectedClip.prompt || selectedClip.content || selectedClip.title,
+	).trim();
+	if (sourceSection) {
+		return createSectionGenerationPrompt(sourcePrompt, sourceSection.headingText);
+	}
+
+	const title = selectedClip.title.trim();
+	if (!sourcePrompt) return title;
+	return [`## ${title}`, "", sourcePrompt].filter(Boolean).join("\n");
+};
+
+const EpisodeVideoPromptMentionEditor: React.FC<
+	PromptEditorProps & {
+		allAssets: ProjectAsset[];
+		allDocuments: MarkdownDocument[];
+		onGenerateReference?: (section: MarkdownSectionContext) => void;
+		projectId?: string;
+		selectedGenerationAssets?: SelectedGenerationAsset[];
+	}
+> = ({
+	allAssets,
+	allDocuments,
+	onGenerateReference,
+	projectId,
+	selectedGenerationAssets,
+	...props
+}) => {
+	const extensions = useMemo(
+		() => [createDocumentMentionExtension({ selectedGenerationAssets })],
+		[selectedGenerationAssets],
+	);
+
+	return (
+		<DocumentMentionHoverPopover
+			allAssets={allAssets}
+			allDocuments={allDocuments}
+			onGenerateReference={onGenerateReference}
+			projectId={projectId}
+			selectedGenerationAssets={selectedGenerationAssets}
+		>
+			<PromptEditor
+				{...props}
+				extensions={extensions}
+				editorClassName="section-prompt-prosemirror"
+			/>
+		</DocumentMentionHoverPopover>
+	);
+};
+
+export const findEpisodeVideoSourceSection = (
+	documentMarkdown: string,
+	selectedClip: TimelineClip | null,
+	documentId?: string | null,
+): EpisodeVideoSourceSection | null => {
+	if (!selectedClip || !documentMarkdown.trim()) return null;
+
+	const laneSources = readStoryboardLaneSources(documentMarkdown, { documentId });
+	if (laneSources.length === 0) return null;
+
+	const normalizedTitle = normalizeHeadingText(selectedClip.title);
+	const titleMatch = laneSources.find(
+		(section) => normalizeHeadingText(section.title) === normalizedTitle,
+	);
+	if (titleMatch) return sourceSectionFromLaneSource(titleMatch);
+
+	const sourceIndex = episodeClipSourceIndex(selectedClip.id);
+	if (sourceIndex == null) return null;
+
+	const indexedSource = laneSources[sourceIndex];
+	return indexedSource ? sourceSectionFromLaneSource(indexedSource) : null;
+};
+
+const sourceSectionFromLaneSource = (source: StoryboardLaneSource): EpisodeVideoSourceSection => {
+	const markdown = stripSectionIdCommentLines(source.markdown).trim();
+	const bodyMarkdown = stripEpisodeVideoPromptInternalReferences(
+		stripSectionHeadingLine(markdown),
+	).trim();
+
+	return {
+		blockId: source.blockId,
+		bodyMarkdown,
+		headingLevel: source.headingLevel,
+		headingOccurrence: source.headingOccurrence,
+		headingText: source.title,
+		markdown,
+		plainText: markdownToPlainText(markdown),
+	};
+};
+
+const stripSectionHeadingLine = (markdown: string) =>
+	markdown
+		.split("\n")
+		.filter((line, index) => index > 0 || !/^#{1,6}\s+/.test(line))
+		.join("\n");
+
+const episodeClipSourceIndex = (clipId: string) => {
+	const match = /^video-(\d+)-/u.exec(clipId);
+	if (!match?.[1]) return null;
+
+	const index = Number(match[1]);
+	return Number.isFinite(index) ? index : null;
+};
+
+const stripEpisodeVideoPromptInternalReferences = (markdown: string) =>
+	markdown
+		.split("\n")
+		.filter((line) => {
+			const trimmed = line.trim();
+			if (/^!\[([^\]]*)\]\((?:<[^>]+>|[^\s)]+)\)$/.test(trimmed)) return false;
+			return true;
+		})
+		.join("\n")
+		.replace(/\n{3,}/g, "\n\n");
+
+const markdownToPlainText = (markdown: string) =>
+	markdown
+		.replace(/@\[((?:\\.|[^\]\\])*)\]\((?:<[^>]+>|[^\s)]+)\)/g, "$1")
+		.replace(/!\[([^\]]*)\]\((?:<[^>]+>|[^\s)]+)\)/g, "$1")
+		.replace(/^#{1,6}\s+/gm, "")
+		.replace(/^\s*[-*+]\s+/gm, "")
+		.replace(/\*\*([^*]+)\*\*/g, "$1")
+		.replace(/__([^_]+)__/g, "$1")
+		.replace(/[*_`>#]/g, "")
+		.replace(/[ \t]+\n/g, "\n")
+		.trim();
+
+export const buildEpisodeVideoReferenceInputs = ({
+	allAssets,
+	allDocuments,
+	promptMarkdown,
+	sourceMarkdown,
+}: {
+	allAssets: ProjectAsset[];
+	allDocuments: MarkdownDocument[];
+	promptMarkdown: string;
+	sourceMarkdown: string;
+}) =>
+	buildMentionReferenceInputs(
+		parseMentionsFromMarkdown(`${sourceMarkdown}\n\n${promptMarkdown}`)
+			.map((reference) => resolveMentionPayload(reference, allDocuments, allAssets))
+			.filter(uniqueResolvedMention),
+	);
+
+export const firstVideoAssetSource = (assets: GenerationAsset[]) => {
+	const asset = assets.find((item) => item.kind === "video" && generationAssetSource(item));
+
+	return asset ? generationAssetSource(asset) : "";
+};

@@ -1,0 +1,353 @@
+package agent
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
+)
+
+const (
+	defaultAgentBackendID      = "codex"
+	defaultAgentBackendCommand = "codex-acp"
+	customAgentBackendID       = "custom"
+)
+
+// AgentBackend describes one configured ACP-compatible agent backend.
+type AgentBackend struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Command     string `json:"command"`
+	Description string `json:"description,omitempty"`
+	IsBuiltin   bool   `json:"isBuiltin,omitempty"`
+}
+
+// AgentBackendsPayload is returned by the configured agent backend API.
+type AgentBackendsPayload struct {
+	Backends []AgentBackend `json:"backends"`
+	ActiveID string         `json:"activeId"`
+}
+
+// AgentBackendService keeps the configured ACP backends and active backend in memory.
+type AgentBackendService struct {
+	mu       sync.RWMutex
+	backends []AgentBackend
+	activeID string
+	binDir   string
+}
+
+type agentManifest struct {
+	ID           string   `json:"id"`
+	Bin          string   `json:"bin"`
+	Args         []string `json:"args"`
+	Version      string   `json:"version"`
+	CodexBin     string   `json:"codexBin,omitempty"`
+	CodexVersion string   `json:"codexVersion,omitempty"`
+}
+
+// NewAgentBackendService creates an in-memory service for the configured ACP backend.
+func NewAgentBackendService(initialCommand string) *AgentBackendService {
+	return NewAgentBackendServiceWithBinDir(initialCommand, "", "")
+}
+
+// NewAgentBackendServiceWithBinDir creates a backend service with optional vendored binaries.
+func NewAgentBackendServiceWithBinDir(initialCommand string, binDir string, activeBackendID string) *AgentBackendService {
+	backends := builtinAgentBackends()
+	activeID := ""
+	command := normalizeAgentBackendCommand(initialCommand)
+	if command != "" {
+		for _, backend := range backends {
+			if normalizeAgentBackendCommand(backend.Command) == command {
+				activeID = backend.ID
+				return newAgentBackendService(backends, activeID, binDir, activeBackendID)
+			}
+		}
+
+		backends = append(backends, AgentBackend{
+			ID:          customAgentBackendID,
+			Name:        "Custom",
+			Command:     command,
+			Description: "通过 --acp-command 提供的自定义 ACP 后端。",
+			IsBuiltin:   false,
+		})
+		activeID = customAgentBackendID
+	}
+
+	return newAgentBackendService(backends, activeID, binDir, activeBackendID)
+}
+
+// ListBackends returns a snapshot of configured backends and the active id.
+func (store *AgentBackendService) ListBackends() AgentBackendsPayload {
+	if store == nil {
+		return AgentBackendsPayload{
+			Backends: builtinAgentBackends(),
+			ActiveID: "",
+		}
+	}
+
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+
+	backends := make([]AgentBackend, len(store.backends))
+	copy(backends, store.backends)
+	activeID := store.activeID
+	return AgentBackendsPayload{
+		Backends: backends,
+		ActiveID: activeID,
+	}
+}
+
+// ActiveCommand returns the command for the active backend.
+func (store *AgentBackendService) ActiveCommand() string {
+	if store == nil {
+		return ""
+	}
+
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+
+	return store.activeCommandLocked()
+}
+
+// ActiveArgv returns the executable argv for the active backend.
+func (store *AgentBackendService) ActiveArgv() []string {
+	if store == nil {
+		return nil
+	}
+
+	store.mu.RLock()
+	activeID := store.activeID
+	store.mu.RUnlock()
+	return store.ArgvForBackend(activeID)
+}
+
+// ArgvForBackend returns the executable argv for a specific configured backend.
+func (store *AgentBackendService) ArgvForBackend(id string) []string {
+	id = strings.TrimSpace(id)
+	if store == nil {
+		if id == defaultAgentBackendID {
+			return splitAgentBackendCommand(defaultAgentBackendCommand)
+		}
+		return nil
+	}
+
+	store.mu.RLock()
+	binDir := store.binDir
+	command := ""
+	for _, backend := range store.backends {
+		if backend.ID == id {
+			command = strings.TrimSpace(backend.Command)
+			break
+		}
+	}
+	store.mu.RUnlock()
+	if command == "" {
+		return nil
+	}
+	if strings.TrimSpace(binDir) != "" {
+		if manifest, err := loadAgentManifest(binDir, id); err == nil {
+			if argv := manifestArgv(binDir, id, manifest); len(argv) > 0 {
+				return argv
+			}
+		}
+	}
+	return splitAgentBackendCommand(command)
+}
+
+// ActiveEnv returns environment variables required by the active vendored backend.
+func (store *AgentBackendService) ActiveEnv() map[string]string {
+	if store == nil {
+		return map[string]string{}
+	}
+	store.mu.RLock()
+	activeID := store.activeID
+	store.mu.RUnlock()
+	return store.EnvForBackend(activeID)
+}
+
+// EnvForBackend returns environment variables required by a specific vendored backend.
+func (store *AgentBackendService) EnvForBackend(id string) map[string]string {
+	if store == nil {
+		return map[string]string{}
+	}
+	id = strings.TrimSpace(id)
+	store.mu.RLock()
+	binDir := store.binDir
+	store.mu.RUnlock()
+	if strings.TrimSpace(binDir) == "" || id == "" {
+		return map[string]string{}
+	}
+	manifest, err := loadAgentManifest(binDir, id)
+	if err != nil || manifest.CodexBin == "" {
+		return map[string]string{}
+	}
+	return map[string]string{
+		"CODEX_PATH": filepath.Join(binDir, id, manifest.CodexBin),
+	}
+}
+
+// CodexExecutable returns the vendored Codex executable for the built-in Codex backend.
+func (store *AgentBackendService) CodexExecutable() (string, error) {
+	if store == nil {
+		return "", fmt.Errorf("agent backend service is unavailable")
+	}
+
+	store.mu.RLock()
+	binDir := store.binDir
+	store.mu.RUnlock()
+	if strings.TrimSpace(binDir) == "" {
+		return "", fmt.Errorf("agent bin dir is empty")
+	}
+
+	manifest, err := loadAgentManifest(binDir, defaultAgentBackendID)
+	if err != nil {
+		return "", err
+	}
+	if manifest.CodexBin == "" {
+		return "", fmt.Errorf("codex executable is missing from the agent manifest")
+	}
+	path := filepath.Join(binDir, defaultAgentBackendID, manifest.CodexBin)
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("checking codex executable %s: %w", path, err)
+	}
+	if info.IsDir() || (runtime.GOOS != "windows" && info.Mode()&0o111 == 0) {
+		return "", fmt.Errorf("codex executable %s is not executable", path)
+	}
+	return path, nil
+}
+
+func (store *AgentBackendService) activeCommandLocked() string {
+	for _, backend := range store.backends {
+		if backend.ID == store.activeID {
+			command := strings.TrimSpace(backend.Command)
+			if command != "" {
+				return command
+			}
+			break
+		}
+	}
+	return ""
+}
+
+func builtinAgentBackends() []AgentBackend {
+	return []AgentBackend{
+		{
+			ID:          defaultAgentBackendID,
+			Name:        "Codex Harness",
+			Command:     defaultAgentBackendCommand,
+			Description: "Codex Harness 智能体后端。",
+			IsBuiltin:   true,
+		},
+		{
+			ID:          "opencode",
+			Name:        "MediaGo Agent Core",
+			Command:     "opencode acp",
+			Description: "OpenAI-compatible 模型使用 Agent Core；DeepSeek 经独立 Harness Adapter 路径接入。",
+			IsBuiltin:   true,
+		},
+	}
+}
+
+func newAgentBackendService(backends []AgentBackend, activeID string, binDir string, requestedActiveID string) *AgentBackendService {
+	requestedActiveID = strings.TrimSpace(requestedActiveID)
+	if requestedActiveID != "" {
+		for _, backend := range backends {
+			if backend.ID == requestedActiveID {
+				activeID = requestedActiveID
+				break
+			}
+		}
+	}
+
+	return &AgentBackendService{
+		backends: backends,
+		activeID: activeID,
+		binDir:   strings.TrimSpace(binDir),
+	}
+}
+
+func loadAgentManifest(binDir string, id string) (agentManifest, error) {
+	binDir = strings.TrimSpace(binDir)
+	id = strings.TrimSpace(id)
+	if binDir == "" {
+		return agentManifest{}, fmt.Errorf("agent bin dir is empty")
+	}
+	if id == "" {
+		return agentManifest{}, fmt.Errorf("agent id is empty")
+	}
+
+	path := filepath.Join(binDir, id, "agent.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return agentManifest{}, fmt.Errorf("reading agent manifest %s: %w", path, err)
+	}
+
+	var manifest agentManifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return agentManifest{}, fmt.Errorf("parsing agent manifest %s: %w", path, err)
+	}
+	manifest.ID = strings.TrimSpace(manifest.ID)
+	manifest.Bin = strings.TrimSpace(manifest.Bin)
+	manifest.Version = strings.TrimSpace(manifest.Version)
+	manifest.CodexBin = strings.TrimSpace(manifest.CodexBin)
+	manifest.CodexVersion = strings.TrimSpace(manifest.CodexVersion)
+	for index := range manifest.Args {
+		manifest.Args[index] = strings.TrimSpace(manifest.Args[index])
+	}
+	if manifest.ID != "" && manifest.ID != id {
+		return agentManifest{}, fmt.Errorf("agent manifest %s has id %q, want %q", path, manifest.ID, id)
+	}
+	if manifest.Bin == "" {
+		return agentManifest{}, fmt.Errorf("agent manifest %s has empty bin", path)
+	}
+	manifest.Bin, err = cleanAgentManifestPath(manifest.Bin)
+	if err != nil {
+		return agentManifest{}, fmt.Errorf("agent manifest %s bin: %w", path, err)
+	}
+	if manifest.CodexBin != "" {
+		manifest.CodexBin, err = cleanAgentManifestPath(manifest.CodexBin)
+		if err != nil {
+			return agentManifest{}, fmt.Errorf("agent manifest %s codexBin: %w", path, err)
+		}
+	}
+	return manifest, nil
+}
+
+func cleanAgentManifestPath(value string) (string, error) {
+	cleaned := filepath.Clean(strings.TrimSpace(value))
+	if cleaned == "" || cleaned == "." || filepath.IsAbs(cleaned) || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("must be a relative path inside the agent directory")
+	}
+	return cleaned, nil
+}
+
+func manifestArgv(binDir string, id string, manifest agentManifest) []string {
+	bin := strings.TrimSpace(manifest.Bin)
+	if bin == "" {
+		return nil
+	}
+
+	argv := []string{filepath.Join(binDir, id, bin)}
+	for _, arg := range manifest.Args {
+		if arg != "" {
+			argv = append(argv, arg)
+		}
+	}
+	return argv
+}
+
+func normalizeAgentBackendCommand(command string) string {
+	return strings.Join(strings.Fields(command), " ")
+}
+
+func splitAgentBackendCommand(command string) []string {
+	parts := strings.Fields(command)
+	if len(parts) == 0 {
+		return nil
+	}
+	return parts
+}

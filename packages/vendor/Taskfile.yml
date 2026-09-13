@@ -1,0 +1,125 @@
+version: "3"
+
+tasks:
+  prepare:
+    desc: Prepare one ACP agent (AGENT=codex|opencode, PLATFORM=darwin-arm64|windows-x64)
+    vars:
+      AGENT: '{{.AGENT | default "codex"}}'
+      PLATFORM: '{{.PLATFORM | default ""}}'
+    preconditions:
+      - sh: 'case "{{.AGENT}}" in codex|opencode) ;; *) exit 1 ;; esac'
+        msg: "AGENT must be one of: codex, opencode"
+    cmds:
+      - go run ./cmd/prepare-agent --agent {{.AGENT}} {{if .PLATFORM}}--platform {{.PLATFORM}}{{end}}
+
+  prepare:tool:
+    desc: Prepare one vendored tool from tools.json (TOOL=ffmpeg|ffprobe|dreamina|libtv|pippit, PLATFORM=darwin-arm64|windows-x64)
+    vars:
+      TOOL: '{{.TOOL | default "ffmpeg"}}'
+      PLATFORM: '{{.PLATFORM | default ""}}'
+    cmds:
+      - go run ./cmd/prepare-tool --tool {{.TOOL}} {{if .PLATFORM}}--platform {{.PLATFORM}}{{end}}
+
+  prepare:media-tools:
+    vars:
+      PLATFORM: '{{.PLATFORM | default ""}}'
+    cmds:
+      - task: prepare:tool
+        vars:
+          TOOL: ffmpeg
+          PLATFORM: "{{.PLATFORM}}"
+      - task: prepare:tool
+        vars:
+          TOOL: ffprobe
+          PLATFORM: "{{.PLATFORM}}"
+
+  prepare:generation-clis:
+    desc: Prepare selected generation CLIs (GENERATION_CLIS=dreamina,libtv,pippit|none)
+    vars:
+      GENERATION_CLIS: '{{.GENERATION_CLIS | default "dreamina"}}'
+      PLATFORM: '{{.PLATFORM | default ""}}'
+    cmds:
+      - go run ./cmd/prepare-tool --tools "{{.GENERATION_CLIS}}" {{if .PLATFORM}}--platform "{{.PLATFORM}}"{{end}}
+
+  prepare:rights:
+    desc: Prepare the private mediago-rights Runtime when MEDIAGO_INCLUDE_PROTECTED_PACK_RUNTIME=1
+    vars:
+      PLATFORM: '{{.PLATFORM | default ""}}'
+    cmds:
+      - go run ./cmd/prepare-rights {{if .PLATFORM}}--platform "{{.PLATFORM}}"{{end}}
+
+  prepare:all:
+    cmds:
+      - task: prepare
+        vars:
+          AGENT: codex
+      - task: prepare
+        vars:
+          AGENT: opencode
+      - task: prepare:media-tools
+      - task: prepare:generation-clis
+      - task: prepare:rights
+
+  prepare:clean:
+    cmds:
+      - rm -rf dist
+
+  fmt:
+    cmds:
+      - gofmt -w .
+
+  fmt:check:
+    cmds:
+      - test -z "$(gofmt -l .)"
+
+  vet:
+    cmds:
+      - |
+        packages="$(go list ./...)"
+        if [ -n "$packages" ]; then
+          go vet $packages
+        else
+          echo "no Go packages to vet"
+        fi
+
+  test:
+    cmds:
+      - |
+        packages="$(go list ./...)"
+        if [ -n "$packages" ]; then
+          go test -race $packages
+        else
+          echo "no Go packages to test"
+        fi
+
+  test:cover:
+    cmds:
+      - |
+        packages="$(go list ./...)"
+        if [ -n "$packages" ]; then
+          go test -race -coverprofile=coverage.out $packages
+          go tool cover -func=coverage.out
+        else
+          echo "no Go packages to test"
+        fi
+
+  build:
+    cmds:
+      - |
+        packages="$(go list ./...)"
+        if [ -n "$packages" ]; then
+          go build $packages
+        else
+          echo "no Go packages to build"
+        fi
+
+  tidy:
+    cmds:
+      - go mod tidy
+
+  check:
+    cmds:
+      - task: tidy
+      - task: fmt:check
+      - task: vet
+      - task: test

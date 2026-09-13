@@ -1,0 +1,504 @@
+.agent-composer {
+	cursor: text;
+}
+
+.agent-composer[data-disabled="true"] {
+	cursor: not-allowed;
+}
+
+.agent-composer .ProseMirror {
+	min-height: 1.25rem;
+	outline: none;
+	overflow-x: hidden;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.agent-composer .ProseMirror p {
+	margin: 0;
+}
+
+.agent-composer .ProseMirror .is-editor-empty:first-child::before {
+	float: left;
+	height: 0;
+	color: var(--muted-foreground);
+	content: attr(data-placeholder);
+	pointer-events: none;
+}
+
+.agent-composer[data-reference-only="true"] .ProseMirror p:first-child::after {
+	margin-left: var(--space-sm);
+	color: var(--muted-foreground);
+	content: attr(data-placeholder);
+	pointer-events: none;
+}
+
+/* Shared reference-chip visuals (base + category colors). Carried by both the
+   agent composer chip (.agent-reference-mention) and the document editor chip
+   (.document-reference-mention); component-specific tweaks belong on those
+   classes, deliberate shared changes belong here. */
+.reference-mention-chip {
+	display: inline-flex;
+	box-sizing: border-box;
+	min-height: 1.48em;
+	max-width: min(24rem, 100%);
+	align-items: center;
+	gap: 0.3rem;
+	overflow: hidden;
+	border: var(--border-width-scale-sm) solid transparent;
+	border-radius: var(--radius-scale-sm);
+	background: var(--secondary);
+	padding: 0.02em 0.3rem 0;
+	color: var(--secondary-foreground);
+	font-weight: var(--font-weight-scale-medium);
+	line-height: 1;
+	white-space: nowrap;
+	word-break: normal;
+	overflow-wrap: normal;
+}
+
+/* Document glyph drawn with borders so it inherits the chip's category color. */
+.agent-reference-mention-icon {
+	position: relative;
+	display: inline-flex;
+	width: 0.72em;
+	height: 0.92em;
+	flex: 0 0 auto;
+	border: 1.2px solid currentColor;
+	border-radius: 0.14em;
+}
+
+.agent-reference-mention-icon::before {
+	position: absolute;
+	top: 0.2em;
+	right: 0.12em;
+	left: 0.12em;
+	border-top: 1.2px solid currentColor;
+	content: "";
+	box-shadow: 0 0.26em 0 0 currentColor;
+}
+
+.agent-reference-mention-title {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.reference-mention-chip[data-kind="section"] {
+	box-shadow: inset var(--border-width-scale-md) 0 0 currentColor;
+}
+
+.reference-mention-chip[data-category="screenplay"] {
+	border-color: var(--info-border);
+	background: var(--info-surface);
+	color: var(--info-foreground);
+}
+
+.reference-mention-chip[data-category="character"] {
+	border-color: var(--success-border);
+	background: var(--success-surface);
+	color: var(--success-foreground);
+}
+
+.reference-mention-chip[data-category="scene"] {
+	border-color: var(--warning-border);
+	background: var(--warning-surface);
+	color: var(--warning-foreground);
+}
+
+.reference-mention-chip[data-category="prop"] {
+	border-color: color-mix(in srgb, var(--doc-category-prop) 36%, var(--border));
+	background: color-mix(in srgb, var(--doc-category-prop) 12%, var(--background));
+	color: var(--doc-category-prop);
+}
+
+.reference-mention-chip[data-category="storyboard"] {
+	border-color: color-mix(in srgb, var(--doc-category-storyboard) 40%, var(--border));
+	background: color-mix(in srgb, var(--secondary) 80%, var(--background));
+	color: var(--doc-category-storyboard);
+}
+
+.reference-mention-chip[data-category="reference"] {
+	border-color: var(--border);
+	background: var(--muted);
+	color: var(--muted-foreground);
+}
+
+.agent-skill-chip {
+	display: inline-flex;
+	box-sizing: border-box;
+	max-width: min(22rem, 100%);
+	align-items: center;
+	gap: 0.35rem;
+	overflow: hidden;
+	border: var(--border-width-scale-sm) solid color-mix(in srgb, var(--primary) 28%, transparent);
+	border-radius: var(--radius-scale-sm);
+	background: color-mix(in srgb, var(--primary) 8%, transparent);
+	padding: 0.05em 0.38rem 0.05em 0.28rem;
+	color: var(--primary);
+	font-weight: var(--font-weight-scale-medium);
+	line-height: 1.25;
+	text-overflow: ellipsis;
+	vertical-align: baseline;
+	white-space: nowrap;
+	word-break: normal;
+	overflow-wrap: normal;
+}
+
+.agent-skill-chip-icon {
+	position: relative;
+	display: inline-flex;
+	width: 0.88em;
+	height: 0.88em;
+	flex: 0 0 auto;
+	align-items: center;
+	justify-content: center;
+	border: 1.5px solid currentColor;
+	border-radius: 0.18em;
+}
+
+.agent-skill-chip-icon::before,
+.agent-skill-chip-icon::after {
+	position: absolute;
+	content: "";
+}
+
+.agent-skill-chip-icon::before {
+	inset: 0.18em;
+	border: 1.2px solid currentColor;
+	border-radius: 0.1em;
+}
+
+.agent-skill-chip-icon::after {
+	top: -0.12em;
+	right: -0.12em;
+	width: 0.42em;
+	height: 0.42em;
+	border-top: 1.2px solid currentColor;
+	border-right: 1.2px solid currentColor;
+	border-radius: 0.08em;
+}
+
+.agent-skill-chip-title {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.agent-mention-menu,
+.agent-mention-menu-empty {
+	background: var(--popover);
+	color: var(--popover-foreground);
+	font-size: 12px;
+}
+
+.agent-mention-cascader {
+	display: grid;
+	width: min(560px, calc(100vw - 24px));
+	height: 260px;
+	max-height: min(260px, calc(100vh - 72px));
+	grid-template-columns: minmax(205px, 0.92fr) minmax(240px, 1.08fr);
+	overflow: hidden;
+	border: var(--border-width-scale-sm) solid var(--border);
+	border-radius: 10px;
+	background: var(--popover);
+	color: var(--popover-foreground);
+	box-shadow: var(--shadow-scale-lg);
+	font-size: 12px;
+}
+
+.agent-mention-menu {
+	height: 100%;
+	max-height: none;
+	min-height: 0;
+	min-width: 0;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	padding: 6px;
+	scrollbar-gutter: stable;
+	-webkit-overflow-scrolling: touch;
+}
+
+.agent-mention-cascader-pane {
+	position: relative;
+	min-height: 0;
+	min-width: 0;
+	overflow: hidden;
+}
+
+.agent-mention-cascader-primary-pane {
+	background: var(--popover);
+}
+
+.agent-mention-cascader-secondary-pane {
+	--agent-mention-secondary-background: color-mix(in srgb, var(--muted) 34%, var(--popover));
+
+	border-left: var(--border-width-scale-sm) solid var(--border);
+	background: var(--agent-mention-secondary-background);
+}
+
+.agent-mention-cascader-primary {
+	background: transparent;
+}
+
+.agent-mention-cascader-secondary {
+	background: transparent;
+}
+
+.agent-mention-scroll-hint {
+	pointer-events: none;
+	position: absolute;
+	z-index: 1;
+	right: 0;
+	bottom: 0;
+	left: 0;
+	height: 32px;
+}
+
+.agent-mention-scroll-hint-primary {
+	background: linear-gradient(
+		to top,
+		var(--popover) 0%,
+		color-mix(in srgb, var(--popover) 66%, transparent) 58%,
+		transparent 100%
+	);
+}
+
+.agent-mention-scroll-hint-secondary {
+	background: linear-gradient(
+		to top,
+		var(--agent-mention-secondary-background) 0%,
+		color-mix(in srgb, var(--agent-mention-secondary-background) 66%, transparent) 58%,
+		transparent 100%
+	);
+}
+
+.agent-mention-menu-empty {
+	width: min(360px, calc(100vw - 24px));
+	border: var(--border-width-scale-sm) solid var(--border);
+	border-radius: 10px;
+	padding: 8px 10px;
+	color: var(--muted-foreground);
+	box-shadow: var(--shadow-scale-lg);
+}
+
+.agent-mention-pane-label {
+	padding: 2px 5px 4px;
+	color: var(--muted-foreground);
+	font-size: 11px;
+	font-weight: var(--font-weight-scale-semibold);
+	line-height: 14px;
+}
+
+.agent-mention-source-group {
+	padding: 5px 5px 2px;
+	color: var(--muted-foreground);
+	font-size: 11px;
+	font-weight: var(--font-weight-scale-semibold);
+	line-height: 14px;
+}
+
+.agent-mention-source {
+	display: grid;
+	width: 100%;
+	min-height: 34px;
+	grid-template-columns: 15px minmax(0, 1fr) 15px;
+	align-items: center;
+	gap: 6px;
+	border-radius: 7px;
+	padding: 4px 6px;
+	text-align: left;
+	transition:
+		background-color 120ms ease,
+		color 120ms ease;
+}
+
+.agent-mention-source[data-selected="true"] {
+	background: var(--ide-list-active);
+	color: var(--ide-list-active-foreground);
+}
+
+.agent-mention-source-icon,
+.agent-mention-source-chevron {
+	width: 15px;
+	height: 15px;
+	color: var(--muted-foreground);
+}
+
+.agent-mention-source[data-selected="true"] .agent-mention-source-icon,
+.agent-mention-source[data-selected="true"] .agent-mention-source-chevron {
+	color: currentColor;
+}
+
+.agent-mention-source-body {
+	display: grid;
+	min-width: 0;
+	gap: 1px;
+}
+
+.agent-mention-source-title,
+.agent-mention-source-meta {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.agent-mention-source-title {
+	font-size: 12px;
+	font-weight: var(--font-weight-scale-semibold);
+	line-height: 16px;
+}
+
+.agent-mention-source-meta {
+	color: var(--muted-foreground);
+	font-size: 11px;
+	line-height: 14px;
+}
+
+.agent-mention-source[data-selected="true"] .agent-mention-source-meta {
+	color: currentColor;
+	opacity: 0.78;
+}
+
+.agent-mention-option {
+	display: grid;
+	width: 100%;
+	min-height: 50px;
+	grid-template-columns: 15px minmax(0, 1fr);
+	align-items: center;
+	gap: 6px;
+	border-radius: 7px;
+	padding: 4px 6px;
+	text-align: left;
+	transition:
+		background-color 120ms ease,
+		color 120ms ease;
+}
+
+.agent-mention-option[data-has-preview="true"] {
+	grid-template-columns: 15px minmax(0, 1fr) 40px;
+}
+
+.agent-mention-option[data-selected="true"] {
+	background: var(--ide-list-active);
+	color: var(--ide-list-active-foreground);
+}
+
+.agent-mention-option-icon {
+	width: 15px;
+	height: 15px;
+	color: var(--muted-foreground);
+}
+
+.agent-mention-option[data-selected="true"] .agent-mention-option-icon {
+	color: currentColor;
+}
+
+.agent-mention-option-body {
+	display: grid;
+	min-width: 0;
+	gap: 1px;
+}
+
+.agent-mention-option-title,
+.agent-mention-option-meta {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.agent-mention-option-title {
+	color: inherit;
+	font-size: 12px;
+	font-weight: var(--font-weight-scale-medium);
+	line-height: 16px;
+}
+
+.agent-mention-option-preview {
+	width: 40px;
+	height: 40px;
+	justify-self: end;
+	border: var(--border-width-scale-sm) solid color-mix(in srgb, var(--border) 72%, transparent);
+	border-radius: 8px;
+	background: var(--muted);
+	object-fit: cover;
+}
+
+.agent-mention-option-meta {
+	color: var(--muted-foreground);
+	font-size: 11px;
+	line-height: 14px;
+}
+
+.agent-mention-option[data-selected="true"] .agent-mention-option-meta {
+	color: currentColor;
+	opacity: 0.78;
+}
+
+.agent-mention-create {
+	display: grid;
+	width: 100%;
+	min-height: 36px;
+	grid-template-columns: 15px minmax(0, 1fr);
+	align-items: center;
+	gap: 6px;
+	margin-top: 4px;
+	border-radius: 7px;
+	padding: 6px;
+	text-align: left;
+	transition:
+		background-color 120ms ease,
+		color 120ms ease;
+}
+
+.agent-mention-create[data-selected="true"] {
+	background: var(--ide-list-active);
+	color: var(--ide-list-active-foreground);
+}
+
+.agent-mention-create-icon {
+	width: 15px;
+	height: 15px;
+	color: var(--muted-foreground);
+}
+
+.agent-mention-create[data-selected="true"] .agent-mention-create-icon {
+	color: currentColor;
+}
+
+.agent-mention-create-title {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 12px;
+	font-weight: var(--font-weight-scale-medium);
+	line-height: 16px;
+}
+
+@media (max-width: 520px) {
+	.agent-mention-cascader {
+		width: calc(100vw - 16px);
+		grid-template-columns: minmax(150px, 0.95fr) minmax(170px, 1.05fr);
+	}
+
+	.agent-mention-source,
+	.agent-mention-option {
+		gap: 5px;
+		padding: 5px;
+	}
+
+	.agent-mention-option {
+		min-height: 46px;
+	}
+
+	.agent-mention-option-preview {
+		width: 36px;
+		height: 36px;
+	}
+
+	.agent-mention-option[data-has-preview="true"] {
+		grid-template-columns: 15px minmax(0, 1fr) 36px;
+	}
+}

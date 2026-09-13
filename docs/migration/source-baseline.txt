@@ -1,0 +1,3 @@
+source_branch=mediago-clean-baseline-20260903
+source_head=78739afa269e4f634f4431b98630add38bcdb184
+source_status_date=2026-09-14T00:21:55.0713160+08:00

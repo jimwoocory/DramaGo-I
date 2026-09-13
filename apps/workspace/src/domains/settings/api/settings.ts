@@ -1,0 +1,406 @@
+import httpClient from "@/shared/lib/http";
+
+export interface APIKeyProvider {
+	id: string;
+	label: string;
+	description: string;
+	configured: boolean;
+	source: "settings" | "none";
+	masked?: string;
+	credentialLabel?: string;
+	placeholder?: string;
+	help?: string;
+	credentialKind?: "apiKey" | "oauth" | string;
+	capabilities?: string[];
+}
+
+export interface APIKeyListResponse {
+	providers: APIKeyProvider[];
+}
+
+export interface ModelPlatform {
+	id: string;
+	label: string;
+	kind: "unified" | "custom" | string;
+	description: string;
+	apiKeyProviderId: string;
+	modelGroups?: ModelPlatformModelGroup[];
+}
+
+export interface ModelPlatformModelGroup {
+	label: string;
+	models: string[];
+}
+
+export interface ModelPlatformsResponse {
+	platforms: ModelPlatform[];
+}
+
+export interface APIKeyLoginChallenge {
+	status: "pending" | "completed" | string;
+	verificationUri?: string;
+	userCode?: string;
+	deviceCode?: string;
+	message?: string;
+}
+
+export interface APIKeyLoginResponse extends APIKeyListResponse {
+	login: APIKeyLoginChallenge;
+}
+
+export interface AgentModelProfileAPIKeyStatus {
+	configured: boolean;
+	source: "settings" | "none" | string;
+	masked?: string;
+}
+
+export interface AgentModelProfile {
+	id: string;
+	name: string;
+	providerId: string;
+	providerLabel: string;
+	baseURL: string;
+	model: string;
+	modelDisplayName: string;
+	enabled: boolean;
+	isDefault: boolean;
+	supportsImages: boolean;
+	supportsTools: boolean;
+	contextWindow?: number;
+	maxOutputTokens?: number;
+	temperature?: number;
+	apiKey: AgentModelProfileAPIKeyStatus;
+}
+
+export interface AgentModelProfileTemplate {
+	id: string;
+	name: string;
+	providerId: string;
+	providerLabel: string;
+	baseURL: string;
+	model: string;
+	modelDisplayName: string;
+	supportsImages: boolean;
+	supportsTools: boolean;
+	contextWindow?: number;
+	maxOutputTokens?: number;
+	temperature?: number;
+}
+
+export interface AgentModelProfilesResponse {
+	profiles: AgentModelProfile[];
+	defaultProfileId?: string;
+	templates: AgentModelProfileTemplate[];
+}
+
+export type CodexRelayProtocol = "auto" | "responses" | "chatCompletions";
+
+export interface CodexRelayAPIKeyStatus {
+	configured: boolean;
+	source: "settings" | "none" | string;
+	masked?: string;
+}
+
+export interface CodexRelayProfile {
+	id: string;
+	name: string;
+	baseURL: string;
+	model: string;
+	protocol: CodexRelayProtocol;
+	detectedProtocol?: Exclude<CodexRelayProtocol, "auto">;
+	enabled: boolean;
+	apiKey: CodexRelayAPIKeyStatus;
+}
+
+export interface CodexRelaySettingsResponse {
+	enabled: boolean;
+	activeProfileId?: string;
+	profiles: CodexRelayProfile[];
+}
+
+export interface CodexRelayCheckResponse {
+	ok: boolean;
+	profileId: string;
+	baseURL: string;
+	statusCode: number;
+	models: string[];
+	responsesSupported: boolean;
+	chatCompletionsSupported: boolean;
+	recommendedProtocol?: Exclude<CodexRelayProtocol, "auto">;
+}
+
+export interface CodexRelayCheckRequest {
+	profileId?: string;
+}
+
+export interface CodexRelayProfileMutation {
+	id: string;
+	name: string;
+	baseURL: string;
+	model: string;
+	protocol: CodexRelayProtocol;
+	detectedProtocol?: Exclude<CodexRelayProtocol, "auto">;
+	enabled: boolean;
+}
+
+export interface CodexRelaySettingsMutation {
+	enabled: boolean;
+	activeProfileId: string;
+	profiles: CodexRelayProfileMutation[];
+}
+
+export interface CodexAccountStatus {
+	status: "loggedIn" | "notLoggedIn" | "unavailable" | string;
+	email?: string;
+	planType?: string;
+	codexHome: string;
+	shared: boolean;
+}
+
+export interface CodexLoginAttempt {
+	loginId: string;
+	authUrl?: string;
+	status: "pending" | "completed" | "failed" | "canceled" | "expired" | string;
+	error?: string;
+}
+
+export interface JianyingDraftSettings {
+	draftsRoot: string;
+}
+
+export interface AIHubMixSettings {
+	baseURL: string;
+}
+
+export interface SpeechAPISettings {
+	baseURL: string;
+	model: string;
+	voice: string;
+}
+
+export interface VideoAPISettings {
+	baseURL: string;
+	model: string;
+}
+
+export interface AgentModelProfileMutation {
+	templateId?: string;
+	name?: string;
+	providerId?: string;
+	providerLabel?: string;
+	baseURL?: string;
+	model?: string;
+	modelDisplayName?: string;
+	enabled?: boolean;
+	isDefault?: boolean;
+	supportsImages?: boolean;
+	supportsTools?: boolean;
+	contextWindow?: number;
+	maxOutputTokens?: number;
+	temperature?: number;
+}
+
+export const apiKeysKey = "/settings/api-keys";
+export const modelPlatformsKey = "/settings/model-platforms";
+export const aihubmixSettingsKey = "/settings/aihubmix";
+export const speechAPISettingsKey = "/settings/speech-api";
+export const videoAPISettingsKey = "/settings/video-api";
+export const agentModelProfilesKey = "/settings/agent-model-profiles";
+export const codexRelaySettingsKey = "/settings/codex-relay";
+export const codexAccountKey = "/settings/codex-account";
+export const jianyingDraftSettingsKey = "/settings/jianying-draft";
+
+export const getAPIKeys = async () => {
+	const response = await httpClient.get<APIKeyListResponse>(apiKeysKey);
+	return response.data;
+};
+
+export const getModelPlatforms = async () => {
+	const response = await httpClient.get<ModelPlatformsResponse>(modelPlatformsKey);
+	return response.data;
+};
+
+export const getAIHubMixSettings = async () => {
+	const response = await httpClient.get<AIHubMixSettings>(aihubmixSettingsKey);
+	return response.data;
+};
+
+export const saveAIHubMixSettings = async (baseURL: string) => {
+	const response = await httpClient.put<AIHubMixSettings>(aihubmixSettingsKey, { baseURL });
+	return response.data;
+};
+
+export const getSpeechAPISettings = async () => {
+	const response = await httpClient.get<SpeechAPISettings>(speechAPISettingsKey);
+	return response.data;
+};
+
+export const saveSpeechAPISettings = async (input: SpeechAPISettings) => {
+	const response = await httpClient.put<SpeechAPISettings>(speechAPISettingsKey, input);
+	return response.data;
+};
+
+export const getVideoAPISettings = async () => {
+	const response = await httpClient.get<VideoAPISettings>(videoAPISettingsKey);
+	return response.data;
+};
+
+export const saveVideoAPISettings = async (input: VideoAPISettings) => {
+	const response = await httpClient.put<VideoAPISettings>(videoAPISettingsKey, input);
+	return response.data;
+};
+
+export const getJianyingDraftSettings = async () => {
+	const response = await httpClient.get<JianyingDraftSettings>(jianyingDraftSettingsKey);
+	return response.data;
+};
+
+export const saveJianyingDraftSettings = async (draftsRoot: string) => {
+	const response = await httpClient.put<JianyingDraftSettings>(jianyingDraftSettingsKey, {
+		draftsRoot,
+	});
+	return response.data;
+};
+
+export const saveAPIKey = async (providerID: string, apiKey: string) => {
+	const response = await httpClient.put<APIKeyListResponse>(
+		`/settings/api-keys/${encodeURIComponent(providerID)}`,
+		{ apiKey },
+	);
+	return response.data;
+};
+
+export const beginProviderLogin = async (providerID: string, force = false) => {
+	const response = await httpClient.post<APIKeyLoginResponse>(
+		`/settings/api-keys/${encodeURIComponent(providerID)}/login`,
+		{ force },
+	);
+	return response.data;
+};
+
+export const completeProviderLogin = async (providerID: string, deviceCode: string) => {
+	const response = await httpClient.post<APIKeyLoginResponse>(
+		`/settings/api-keys/${encodeURIComponent(providerID)}/login/check`,
+		{ deviceCode },
+	);
+	return response.data;
+};
+
+export const getAgentModelProfiles = async () => {
+	const response = await httpClient.get<AgentModelProfilesResponse>(agentModelProfilesKey);
+	return response.data;
+};
+
+export const getCodexRelaySettings = async () => {
+	const response = await httpClient.get<CodexRelaySettingsResponse>(codexRelaySettingsKey);
+	return response.data;
+};
+
+export const saveCodexRelaySettings = async (input: CodexRelaySettingsMutation) => {
+	const response = await httpClient.put<CodexRelaySettingsResponse>(codexRelaySettingsKey, input);
+	return response.data;
+};
+
+export const checkCodexRelaySettings = async (input: CodexRelayCheckRequest = {}) => {
+	const response = await httpClient.post<CodexRelayCheckResponse>(
+		`${codexRelaySettingsKey}/check`,
+		input,
+	);
+	return response.data;
+};
+
+export const saveCodexRelayProfileAPIKey = async (profileID: string, apiKey: string) => {
+	const response = await httpClient.put<CodexRelaySettingsResponse>(
+		`${codexRelaySettingsKey}/profiles/${encodeURIComponent(profileID)}/api-key`,
+		{ apiKey },
+	);
+	return response.data;
+};
+
+export const clearCodexRelayProfileAPIKey = async (profileID: string) => {
+	const response = await httpClient.delete<CodexRelaySettingsResponse>(
+		`${codexRelaySettingsKey}/profiles/${encodeURIComponent(profileID)}/api-key`,
+	);
+	return response.data;
+};
+
+export const getCodexAccount = async () => {
+	const response = await httpClient.get<CodexAccountStatus>(codexAccountKey, { timeout: 30000 });
+	return response.data;
+};
+
+export const beginCodexAccountLogin = async () => {
+	const response = await httpClient.post<CodexLoginAttempt>(`${codexAccountKey}/login`);
+	return response.data;
+};
+
+export const getCodexAccountLogin = async (loginID: string) => {
+	const response = await httpClient.get<CodexLoginAttempt>(
+		`${codexAccountKey}/login/${encodeURIComponent(loginID)}`,
+	);
+	return response.data;
+};
+
+export const cancelCodexAccountLogin = async (loginID: string) => {
+	const response = await httpClient.delete<CodexLoginAttempt>(
+		`${codexAccountKey}/login/${encodeURIComponent(loginID)}`,
+	);
+	return response.data;
+};
+
+export const logoutCodexAccount = async () => {
+	const response = await httpClient.delete<CodexAccountStatus>(codexAccountKey);
+	return response.data;
+};
+
+export const createAgentModelProfile = async (input: AgentModelProfileMutation) => {
+	const response = await httpClient.post<AgentModelProfilesResponse>(agentModelProfilesKey, input);
+	return response.data;
+};
+
+export const updateAgentModelProfile = async (
+	profileID: string,
+	input: AgentModelProfileMutation,
+) => {
+	const response = await httpClient.patch<AgentModelProfilesResponse>(
+		`${agentModelProfilesKey}/${encodeURIComponent(profileID)}`,
+		input,
+	);
+	return response.data;
+};
+
+export const deleteAgentModelProfile = async (profileID: string) => {
+	const response = await httpClient.delete<AgentModelProfilesResponse>(
+		`${agentModelProfilesKey}/${encodeURIComponent(profileID)}`,
+	);
+	return response.data;
+};
+
+export const setDefaultAgentModelProfile = async (profileID: string) => {
+	const response = await httpClient.put<AgentModelProfilesResponse>(
+		`${agentModelProfilesKey}/${encodeURIComponent(profileID)}/default`,
+	);
+	return response.data;
+};
+
+export const saveAgentModelProfileAPIKey = async (profileID: string, apiKey: string) => {
+	const response = await httpClient.put<AgentModelProfilesResponse>(
+		`${agentModelProfilesKey}/${encodeURIComponent(profileID)}/api-key`,
+		{ apiKey },
+	);
+	return response.data;
+};
+
+export const clearAgentModelProfileAPIKey = async (profileID: string) => {
+	const response = await httpClient.delete<AgentModelProfilesResponse>(
+		`${agentModelProfilesKey}/${encodeURIComponent(profileID)}/api-key`,
+	);
+	return response.data;
+};
+
+export const clearAPIKey = async (providerID: string) => {
+	const response = await httpClient.delete<APIKeyListResponse>(
+		`/settings/api-keys/${encodeURIComponent(providerID)}`,
+	);
+	return response.data;
+};

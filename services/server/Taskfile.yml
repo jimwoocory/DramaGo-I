@@ -1,0 +1,82 @@
+version: "3"
+
+tasks:
+  build:
+    cmds:
+      - task: build:server
+      - task: build:mcp
+      - task: build:document-mcp
+
+  build:server:
+    cmds:
+      - go build -tags workspace_dist -o ../../bin/mediago-server ./cmd/mediago-server
+
+  build:fallback:
+    cmds:
+      - go build -o ../../bin/mediago-server ./cmd/mediago-server
+      - task: build:mcp
+      - task: build:document-mcp
+
+  build:mcp:
+    cmds:
+      - go build -o ../../bin/mediago-mcp ./cmd/mediago-mcp
+
+  build:document-mcp:
+    cmds:
+      - go build -o ../../bin/mediago-document-mcp ./cmd/mediago-document-mcp
+
+  fmt:
+    cmds:
+      - gofmt -w .
+
+  fmt:check:
+    cmds:
+      - test -z "$(gofmt -l .)"
+
+  vet:
+    cmds:
+      - go vet ./...
+
+  test:
+    cmds:
+      - task: swagger
+      - go test -race ./...
+
+  test:integration:
+    cmds:
+      - go test -race -tags integration ./...
+
+  test:cover:
+    cmds:
+      - go test -race -coverprofile=coverage.out ./...
+      - go tool cover -func=coverage.out
+
+  lint:
+    cmds:
+      - go run github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8 run
+
+  tidy:
+    cmds:
+      - go mod tidy
+
+  swagger:
+    cmds:
+      - |
+        if GOWORK=off go run github.com/swaggo/swag/cmd/swag@v1.8.12 init -g main.go -d cmd/mediago-server,internal/http/handlers -o ../../.cache/server-swagger --parseInternal --outputTypes json; then
+          exit 0
+        fi
+        if [ -s ../../.cache/server-swagger/swagger.json ]; then
+          echo "swag generation failed (network?); reusing cached swagger.json"
+          exit 0
+        fi
+        echo "swag generation failed and no cached swagger.json exists"
+        exit 1
+
+  check:
+    cmds:
+      - task: tidy
+      - task: fmt:check
+      - task: vet
+      - task: lint
+      - task: build
+      - task: test

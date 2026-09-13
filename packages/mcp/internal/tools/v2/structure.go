@@ -1,0 +1,20 @@
+package v2
+
+import (
+	"context"
+
+	mediamcp "github.com/mediago-dev/mediago-drama/packages/mcp/pkg/mcp"
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+func registerLoadSkillTool(server *mcpsdk.Server, dispatcher Dispatcher, projectID string, closedWorld bool, logToolRegistered func(string)) {
+	handler := func(ctx context.Context, request *mcpsdk.CallToolRequest, input mediamcp.LoadSkillInput) (*mcpsdk.CallToolResult, any, error) {
+		_ = request
+		output, err := dispatcher.LoadSkill(ctx, projectID, input)
+		if err != nil {
+			return &mcpsdk.CallToolResult{IsError: true}, output, nil
+		}
+		return nil, output, nil
+	}
+	mediamcp.AddTool(server, closedWorld, logToolRegistered, mediamcp.AgentDocumentTools.LoadSkill, handler)
+}

@@ -1,0 +1,60 @@
+package approval
+
+import (
+	"path/filepath"
+	"testing"
+
+	"github.com/mediago-dev/mediago-drama/services/server/internal/domain"
+	"github.com/mediago-dev/mediago-drama/services/server/internal/repository"
+	"github.com/mediago-dev/mediago-drama/services/server/internal/testutil"
+)
+
+func TestStorePersistsDocumentToolApprovalPayload(t *testing.T) {
+	db, err := repository.OpenWorkspaceDB(filepath.Join(t.TempDir(), "workspace.db"))
+	if err != nil {
+		t.Fatalf("opening workspace db: %v", err)
+	}
+	testutil.CloseDB(t, db)
+	store := NewService(repository.NewDocumentToolApprovalRepository(db), nil)
+	projectID := "project-approval"
+	now := domain.TimeFromString("2026-06-01T00:00:00Z")
+	if err := db.Create(&domain.WorkspaceProjectModel{
+		ID:          projectID,
+		Name:        "Project Approval",
+		Category:    "drama",
+		Status:      "active",
+		RelativeDir: projectID,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}).Error; err != nil {
+		t.Fatalf("creating project fixture: %v", err)
+	}
+
+	approval, err := store.createDocumentToolApproval(projectID, DocumentToolApprovalRequest{
+		Name:    "delete_document",
+		Summary: "确认删除文档",
+	})
+	if err != nil {
+		t.Fatalf("creating approval: %v", err)
+	}
+	payload := &DocumentToolApprovalDecisionPayload{
+		Config: &DocumentToolApprovalConfig{
+			Prompt:             "生成漫剧",
+			SaveSourceMaterial: true,
+		},
+	}
+	decided, err := store.decideDocumentToolApproval(projectID, approval.ID, "approved", payload)
+	if err != nil {
+		t.Fatalf("deciding approval: %v", err)
+	}
+	if decided.Status != "approved" {
+		t.Fatalf("status = %q, want approved", decided.Status)
+	}
+	config, ok := decided.DecisionPayload["config"].(map[string]any)
+	if !ok {
+		t.Fatalf("payload = %#v, want nested config", decided.DecisionPayload)
+	}
+	if config["prompt"] != "生成漫剧" {
+		t.Fatalf("config = %#v, want prompt", config)
+	}
+}

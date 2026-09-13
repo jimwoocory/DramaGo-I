@@ -1,0 +1,564 @@
+package repository
+
+import (
+	"errors"
+	"fmt"
+	"path/filepath"
+	"testing"
+
+	"github.com/mediago-dev/mediago-drama/services/server/internal/domain"
+	"github.com/mediago-dev/mediago-drama/services/server/internal/testutil"
+)
+
+func TestGenerationTaskRepositoryLifecycle(t *testing.T) {
+	repo, err := NewGenerationTaskRepository(filepath.Join(t.TempDir(), "workspace.db"))
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	testutil.CloseDB(t, repo.db)
+	seedGenerationProject(t, repo, "alpha")
+
+	conversation := domain.GenerationConversationModel{
+		ID:        "session-1",
+		ScopeID:   "studio",
+		Kind:      "video",
+		Title:     "Video session",
+		CreatedAt: domain.TimeFromString("2026-05-22T00:00:00Z"),
+		UpdatedAt: domain.TimeFromString("2026-05-22T00:00:00Z"),
+	}
+	if err := repo.UpsertGenerationConversation(conversation); err != nil {
+		t.Fatalf("UpsertGenerationConversation() error = %v", err)
+	}
+	conversations, err := repo.ListGenerationConversations("studio", "video")
+	if err != nil {
+		t.Fatalf("ListGenerationConversations() error = %v", err)
+	}
+	if len(conversations) != 1 || conversations[0].ID != conversation.ID {
+		t.Fatalf("ListGenerationConversations() = %+v, want seeded conversation", conversations)
+	}
+
+	task := generationTaskTestModel("task-1", " Submitted ", "2026-05-22T00:00:00Z")
+	task.ConversationID = domain.StringPtr(conversation.ID)
+	task.ProjectID = domain.StringPtr("alpha")
+	task.ErrorCode = "policy_violation"
+	task.ErrorType = "policy_violation"
+	if err := repo.UpsertGenerationTask(task); err != nil {
+		t.Fatalf("UpsertGenerationTask() error = %v", err)
+	}
+
+	got, err := repo.GetGenerationTask(task.ID)
+	if err != nil {
+		t.Fatalf("GetGenerationTask() error = %v", err)
+	}
+	if got.Status != "submitted" ||
+		domain.StringValue(got.ProjectID) != "alpha" ||
+		domain.StringValue(got.CapabilityID) != "video.generate" ||
+		got.ProviderTaskID != task.ProviderTaskID {
+		t.Fatalf("GetGenerationTask() = %+v, want normalized persisted task", got)
+	}
+
+	asset := domain.AssetModel{
+		ID:            "asset-1",
+		ProjectID:     domain.StringPtr("alpha"),
+		Kind:          "video",
+		Filename:      "clip.mp4",
+		MIMEType:      "video/mp4",
+		RelPath:       "project-alpha/generated/clip.mp4",
+		URL:           "/api/v1/media-assets/asset-1/content",
+		Source:        "generated",
+		StorageStatus: "ready",
+		CreatedAt:     domain.TimeFromString("2026-05-22T00:00:00Z"),
+		UpdatedAt:     domain.TimeFromString("2026-05-22T00:00:00Z"),
+	}
+	if err := repo.db.Create(&asset).Error; err != nil {
+		t.Fatalf("creating asset fixture: %v", err)
+	}
+	if err := repo.ReplaceGenerationTaskReferenceRows(task.ID, []domain.GenerationTaskReferenceModel{{
+		TaskID:    task.ID,
+		RefIndex:  0,
+		URL:       domain.StringPtr("https://example.test/reference.png"),
+		CreatedAt: domain.TimeFromString("2026-05-22T00:00:00Z"),
+	}}); err != nil {
+		t.Fatalf("ReplaceGenerationTaskReferenceRows() error = %v", err)
+	}
+	if err := repo.ReplaceGenerationTaskAssetRows(task.ID, []domain.GenerationTaskAssetModel{{
+		TaskID:    task.ID,
+		SlotIndex: 0,
+		AssetID:   asset.ID,
+		Selected:  true,
+		CreatedAt: domain.TimeFromString("2026-05-22T00:00:00Z"),
+		UpdatedAt: domain.TimeFromString("2026-05-22T00:00:00Z"),
+	}}); err != nil {
+		t.Fatalf("ReplaceGenerationTaskAssetRows() error = %v", err)
+	}
+	got, err = repo.GetGenerationTask(task.ID)
+	if err != nil {
+		t.Fatalf("GetGenerationTask() after row replacement error = %v", err)
+	}
+	if len(got.References) != 1 || domain.StringValue(got.References[0].URL) != "https://example.test/reference.png" {
+		t.Fatalf("References = %+v, want normalized reference row", got.References)
+	}
+	if len(got.Assets) != 1 || got.Assets[0].AssetID != asset.ID || got.Assets[0].Asset.URL != asset.URL {
+		t.Fatalf("Assets = %+v, want normalized asset row with preloaded asset", got.Assets)
+	}
+	if err := repo.ReplaceGenerationTaskDeletedSlotRows(task.ID, []domain.GenerationTaskDeletedSlotModel{{
+		TaskID:    task.ID,
+		SlotIndex: 2,
+		CreatedAt: domain.TimeFromString("2026-05-22T00:00:00Z"),
+		UpdatedAt: domain.TimeFromString("2026-05-22T00:00:00Z"),
+	}}); err != nil {
+		t.Fatalf("ReplaceGenerationTaskDeletedSlotRows() error = %v", err)
+	}
+	got, err = repo.GetGenerationTask(task.ID)
+	if err != nil {
+		t.Fatalf("GetGenerationTask() after deleted slot replacement error = %v", err)
+	}
+	if len(got.DeletedSlots) != 1 || got.DeletedSlots[0].SlotIndex != 2 {
+		t.Fatalf("DeletedSlots = %+v, want normalized deleted slot row", got.DeletedSlots)
+	}
+	deletedSlot, err := repo.DeleteGenerationTaskAssetSlot(task.ID, 3)
+	if err != nil {
+		t.Fatalf("DeleteGenerationTaskAssetSlot() for missing asset row error = %v", err)
+	}
+	if !deletedSlot {
+		t.Fatal("DeleteGenerationTaskAssetSlot() deleted = false, want true for persisted tombstone")
+	}
+	got, err = repo.GetGenerationTask(task.ID)
+	if err != nil {
+		t.Fatalf("GetGenerationTask() after tombstone delete error = %v", err)
+	}
+	if len(got.DeletedSlots) != 2 {
+		t.Fatalf("DeletedSlots = %+v, want both deleted slot rows", got.DeletedSlots)
+	}
+
+	pending, err := repo.ListPendingGenerationTasks("video", []string{" submitted ", "SUBMITTED"}, 10)
+	if err != nil {
+		t.Fatalf("ListPendingGenerationTasks() error = %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("ListPendingGenerationTasks() len = %d, want 1", len(pending))
+	}
+	conversationTasks, err := repo.ListGenerationTasksByConversation("video", conversation.ID, false)
+	if err != nil {
+		t.Fatalf("ListGenerationTasksByConversation() error = %v", err)
+	}
+	if len(conversationTasks) != 1 || conversationTasks[0].ID != task.ID {
+		t.Fatalf("ListGenerationTasksByConversation() = %+v, want seeded task", conversationTasks)
+	}
+	projectTasks, err := repo.ListGenerationTasksByProject("video", "alpha")
+	if err != nil {
+		t.Fatalf("ListGenerationTasksByProject() error = %v", err)
+	}
+	if len(projectTasks) != 1 || projectTasks[0].ID != task.ID {
+		t.Fatalf("ListGenerationTasksByProject() = %+v, want seeded project task", projectTasks)
+	}
+
+	if err := repo.RecordGenerationTaskError(
+		task.ID,
+		"provider unavailable",
+		"provider_http_error",
+		"provider_error",
+		true,
+		"2026-05-22T00:01:00Z",
+	); err != nil {
+		t.Fatalf("RecordGenerationTaskError() error = %v", err)
+	}
+	got, err = repo.GetGenerationTask(task.ID)
+	if err != nil {
+		t.Fatalf("GetGenerationTask() after error update error = %v", err)
+	}
+	if got.Error != "provider unavailable" ||
+		got.ErrorCode != "provider_http_error" ||
+		got.ErrorType != "provider_error" ||
+		!got.Retryable {
+		t.Fatalf("updated failure fields = %+v, want structured provider error", got)
+	}
+
+	attempt := domain.GenerationTaskAttemptModel{
+		ID:        "attempt-1",
+		TaskID:    task.ID,
+		Action:    "poll",
+		Status:    " Submitted ",
+		Message:   "still queued",
+		CreatedAt: domain.TimeFromString("2026-05-22T00:02:00Z"),
+	}
+	if err := repo.CreateGenerationTaskAttempt(attempt); err != nil {
+		t.Fatalf("CreateGenerationTaskAttempt() error = %v", err)
+	}
+	attempts, err := repo.ListGenerationTaskAttempts(task.ID, 10)
+	if err != nil {
+		t.Fatalf("ListGenerationTaskAttempts() error = %v", err)
+	}
+	if len(attempts) != 1 || attempts[0].Status != "submitted" {
+		t.Fatalf("attempts = %+v, want normalized submitted attempt", attempts)
+	}
+
+	deleted, err := repo.DeleteGenerationTask(task.ID)
+	if err != nil {
+		t.Fatalf("DeleteGenerationTask() error = %v", err)
+	}
+	if !deleted {
+		t.Fatal("DeleteGenerationTask() deleted = false, want true")
+	}
+	if _, err := repo.GetGenerationTask(task.ID); !errors.Is(err, ErrRecordNotFound) {
+		t.Fatalf("GetGenerationTask() after delete error = %v, want ErrRecordNotFound", err)
+	}
+	attempts, err = repo.ListAllGenerationTaskAttempts(task.ID)
+	if err != nil {
+		t.Fatalf("ListAllGenerationTaskAttempts() after delete error = %v", err)
+	}
+	if len(attempts) != 0 {
+		t.Fatalf("ListAllGenerationTaskAttempts() len = %d, want 0", len(attempts))
+	}
+}
+
+func TestGenerationTaskRepositoryListDefaultLimitAndOffset(t *testing.T) {
+	repo, err := NewGenerationTaskRepository(filepath.Join(t.TempDir(), "workspace.db"))
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	testutil.CloseDB(t, repo.db)
+	seedGenerationProject(t, repo, "project-list")
+	if err := repo.UpsertGenerationConversation(domain.GenerationConversationModel{
+		ID:        "session-list",
+		ScopeID:   "studio",
+		Kind:      "video",
+		Title:     "List session",
+		CreatedAt: domain.TimeFromString("2026-05-22T00:00:00Z"),
+		UpdatedAt: domain.TimeFromString("2026-05-22T00:00:00Z"),
+	}); err != nil {
+		t.Fatalf("UpsertGenerationConversation() error = %v", err)
+	}
+
+	total := defaultGenerationTaskListLimit + 5
+	for index := 0; index < total; index++ {
+		task := generationTaskTestModel(
+			fmt.Sprintf("task-%03d", index),
+			"completed",
+			fmt.Sprintf("2026-05-22T00:%02d:%02dZ", index/60, index%60),
+		)
+		task.ConversationID = domain.StringPtr("session-list")
+		task.ProjectID = domain.StringPtr("project-list")
+		if err := repo.UpsertGenerationTask(task); err != nil {
+			t.Fatalf("UpsertGenerationTask(%d) error = %v", index, err)
+		}
+	}
+
+	tasks, err := repo.ListGenerationTasks()
+	if err != nil {
+		t.Fatalf("ListGenerationTasks() error = %v", err)
+	}
+	if len(tasks) != defaultGenerationTaskListLimit {
+		t.Fatalf("ListGenerationTasks() len = %d, want %d", len(tasks), defaultGenerationTaskListLimit)
+	}
+	if tasks[0].ID != "task-204" {
+		t.Fatalf("first task = %q, want newest task-204", tasks[0].ID)
+	}
+
+	paged, err := repo.ListGenerationTasks(GenerationTaskListOptions{Limit: 3, Offset: 2})
+	if err != nil {
+		t.Fatalf("ListGenerationTasks(paged) error = %v", err)
+	}
+	if got := generationTaskModelIDs(paged); fmt.Sprint(got) != "[task-202 task-201 task-200]" {
+		t.Fatalf("paged ids = %v, want [task-202 task-201 task-200]", got)
+	}
+}
+
+func seedGenerationProject(t *testing.T, repo *GenerationTaskRepository, id string) {
+	t.Helper()
+	now := domain.TimeFromString("2026-05-22T00:00:00Z")
+	if err := repo.db.Create(&domain.WorkspaceProjectModel{
+		ID:          id,
+		Name:        id,
+		Category:    "drama",
+		Status:      "active",
+		RelativeDir: id,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}).Error; err != nil {
+		t.Fatalf("creating project fixture %q: %v", id, err)
+	}
+}
+
+func generationTaskTestModel(id string, status string, updatedAt string) domain.GenerationTaskModel {
+	return domain.GenerationTaskModel{
+		ID:             id,
+		ProviderTaskID: id + "-provider",
+		CapabilityID:   domain.StringPtr("video.generate"),
+		Kind:           "video",
+		RouteID:        "route",
+		FamilyID:       "family",
+		VersionID:      "version",
+		Provider:       "provider",
+		ModelID:        "model-id",
+		Model:          "model",
+		Prompt:         "prompt",
+		ParamsJSON:     "{}",
+		Status:         status,
+		Message:        "done",
+		CreatedAt:      domain.TimeFromString("2026-05-22T00:00:00Z"),
+		UpdatedAt:      domain.TimeFromString(updatedAt),
+	}
+}
+
+func generationTaskModelIDs(tasks []domain.GenerationTaskModel) []string {
+	ids := make([]string, 0, len(tasks))
+	for _, task := range tasks {
+		ids = append(ids, task.ID)
+	}
+	return ids
+}
+
+func TestLatestCompletedImageAssetIDBySectionUsesNewestSuccessfulOutput(t *testing.T) {
+	repo, err := NewGenerationTaskRepository(filepath.Join(t.TempDir(), "workspace.db"))
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	testutil.CloseDB(t, repo.db)
+	seedGenerationProject(t, repo, "project-a")
+
+	for _, id := range []string{"asset-old", "asset-new", "asset-failed"} {
+		asset := domain.AssetModel{
+			ID: id, ProjectID: domain.StringPtr("project-a"), Kind: "image", Filename: id + ".png",
+			MIMEType: "image/png", RelPath: "project-a/" + id + ".png", Source: "generated", StorageStatus: "ready",
+		}
+		if err := repo.db.Create(&asset).Error; err != nil {
+			t.Fatalf("creating asset %s: %v", id, err)
+		}
+	}
+	create := func(id, status, assetID, updatedAt string) {
+		t.Helper()
+		task := generationTaskTestModel(id, status, updatedAt)
+		task.Kind = "image"
+		task.ProjectID = domain.StringPtr("project-a")
+		task.DocumentID = domain.StringPtr("storyboard-a")
+		task.SectionID = domain.StringPtr("shot-a")
+		if err := repo.UpsertGenerationTask(task); err != nil {
+			t.Fatalf("UpsertGenerationTask(%s) error = %v", id, err)
+		}
+		if err := repo.ReplaceGenerationTaskAssetRows(id, []domain.GenerationTaskAssetModel{{
+			TaskID: id, SlotIndex: 0, AssetID: assetID,
+		}}); err != nil {
+			t.Fatalf("ReplaceGenerationTaskAssetRows(%s) error = %v", id, err)
+		}
+	}
+	create("task-old", "completed", "asset-old", "2026-05-22T00:01:00Z")
+	create("task-failed", "failed", "asset-failed", "2026-05-22T00:03:00Z")
+	create("task-new", "success", "asset-new", "2026-05-22T00:02:00Z")
+
+	assetID, ok, err := repo.LatestCompletedImageAssetIDBySection("project-a", "storyboard-a", "shot-a")
+	if err != nil {
+		t.Fatalf("LatestCompletedImageAssetIDBySection() error = %v", err)
+	}
+	if !ok || assetID != "asset-new" {
+		t.Fatalf("latest asset = %q ok=%v, want asset-new", assetID, ok)
+	}
+	if _, ok, err := repo.LatestCompletedImageAssetIDBySection("project-a", "storyboard-a", "missing"); err != nil || ok {
+		t.Fatalf("missing section ok=%v err=%v, want no result", ok, err)
+	}
+}
+
+func TestLatestCompletedReferencedImageAssetIDBySectionSkipsLegacyNoReferenceOutput(t *testing.T) {
+	repo, err := NewGenerationTaskRepository(filepath.Join(t.TempDir(), "workspace.db"))
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	testutil.CloseDB(t, repo.db)
+	seedGenerationProject(t, repo, "project-a")
+
+	for _, id := range []string{"asset-trusted", "asset-legacy"} {
+		asset := domain.AssetModel{
+			ID: id, ProjectID: domain.StringPtr("project-a"), Kind: "image", Filename: id + ".png",
+			MIMEType: "image/png", RelPath: "project-a/" + id + ".png", Source: "generated", StorageStatus: "ready",
+		}
+		if err := repo.db.Create(&asset).Error; err != nil {
+			t.Fatalf("creating asset %s: %v", id, err)
+		}
+	}
+	create := func(id, assetID, updatedAt string, withImageReference bool) {
+		t.Helper()
+		task := generationTaskTestModel(id, "completed", updatedAt)
+		task.Kind = "image"
+		task.ProjectID = domain.StringPtr("project-a")
+		task.DocumentID = domain.StringPtr("storyboard-a")
+		task.SectionID = domain.StringPtr("shot-a")
+		// source_refs_json is content provenance, not media-reference lineage.
+		// Keep it empty for both fixtures so the query must use generation_task_references.
+		task.SourceRefsJSON = `[]`
+		if err := repo.UpsertGenerationTask(task); err != nil {
+			t.Fatalf("UpsertGenerationTask(%s) error = %v", id, err)
+		}
+		if err := repo.ReplaceGenerationTaskAssetRows(id, []domain.GenerationTaskAssetModel{{TaskID: id, SlotIndex: 0, AssetID: assetID}}); err != nil {
+			t.Fatalf("ReplaceGenerationTaskAssetRows(%s) error = %v", id, err)
+		}
+		if withImageReference {
+			if err := repo.ReplaceGenerationTaskReferenceRows(id, []domain.GenerationTaskReferenceModel{{
+				TaskID: id, RefIndex: 0, URL: domain.StringPtr("https://example.test/reference.png"),
+				CreatedAt: domain.TimeFromString(updatedAt),
+			}}); err != nil {
+				t.Fatalf("ReplaceGenerationTaskReferenceRows(%s) error = %v", id, err)
+			}
+		}
+	}
+	create("task-trusted", "asset-trusted", "2026-05-22T00:01:00Z", true)
+	create("task-legacy-newer", "asset-legacy", "2026-05-22T00:02:00Z", false)
+
+	assetID, ok, err := repo.LatestCompletedReferencedImageAssetIDBySection("project-a", "storyboard-a", "shot-a")
+	if err != nil {
+		t.Fatalf("LatestCompletedReferencedImageAssetIDBySection() error = %v", err)
+	}
+	if !ok || assetID != "asset-trusted" {
+		t.Fatalf("latest referenced asset = %q ok=%v, want asset-trusted", assetID, ok)
+	}
+}
+
+func TestLatestCompletedReferencedImageAssetIDBySectionPrefersNewestCreatedTask(t *testing.T) {
+	repo, err := NewGenerationTaskRepository(filepath.Join(t.TempDir(), "workspace.db"))
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	testutil.CloseDB(t, repo.db)
+	seedGenerationProject(t, repo, "project-a")
+
+	for _, id := range []string{"asset-old", "asset-new"} {
+		asset := domain.AssetModel{
+			ID: id, ProjectID: domain.StringPtr("project-a"), Kind: "image", Filename: id + ".png",
+			MIMEType: "image/png", RelPath: "project-a/" + id + ".png", Source: "generated", StorageStatus: "ready",
+		}
+		if err := repo.db.Create(&asset).Error; err != nil {
+			t.Fatalf("creating asset %s: %v", id, err)
+		}
+	}
+	create := func(id, assetID, createdAt string) {
+		t.Helper()
+		task := generationTaskTestModel(id, "completed", createdAt)
+		task.CreatedAt = domain.TimeFromString(createdAt)
+		task.Kind = "image"
+		task.ProjectID = domain.StringPtr("project-a")
+		task.DocumentID = domain.StringPtr("storyboard-a")
+		task.SectionID = domain.StringPtr("shot-a")
+		if err := repo.UpsertGenerationTask(task); err != nil {
+			t.Fatalf("UpsertGenerationTask(%s) error = %v", id, err)
+		}
+		if err := repo.ReplaceGenerationTaskAssetRows(id, []domain.GenerationTaskAssetModel{{TaskID: id, SlotIndex: 0, AssetID: assetID}}); err != nil {
+			t.Fatalf("ReplaceGenerationTaskAssetRows(%s) error = %v", id, err)
+		}
+		if err := repo.ReplaceGenerationTaskReferenceRows(id, []domain.GenerationTaskReferenceModel{{
+			TaskID: id, RefIndex: 0, URL: domain.StringPtr("https://example.test/reference.png"),
+			CreatedAt: domain.TimeFromString(createdAt),
+		}}); err != nil {
+			t.Fatalf("ReplaceGenerationTaskReferenceRows(%s) error = %v", id, err)
+		}
+	}
+	create("task-old", "asset-old", "2026-05-22T00:01:00Z")
+	create("task-new", "asset-new", "2026-05-22T00:02:00Z")
+
+	// Simulate a historical task being touched after a newer rerun completed. Continuity
+	// must follow the newer user request, not whichever row was most recently updated.
+	if err := repo.db.Exec("UPDATE generation_tasks SET updated_at = ? WHERE id = ?", "2026-05-22T00:03:00Z", "task-old").Error; err != nil {
+		t.Fatalf("touching old task: %v", err)
+	}
+
+	assetID, ok, err := repo.LatestCompletedReferencedImageAssetIDBySection("project-a", "storyboard-a", "shot-a")
+	if err != nil {
+		t.Fatalf("LatestCompletedReferencedImageAssetIDBySection() error = %v", err)
+	}
+	if !ok || assetID != "asset-new" {
+		t.Fatalf("latest referenced asset = %q ok=%v, want asset-new", assetID, ok)
+	}
+}
+
+func TestLatestCompletedReferencedImageAssetIDByShotManifestScopesSiblingProductionShots(t *testing.T) {
+	repo, err := NewGenerationTaskRepository(filepath.Join(t.TempDir(), "workspace.db"))
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	testutil.CloseDB(t, repo.db)
+	seedGenerationProject(t, repo, "project-a")
+
+	for _, id := range []string{"asset-beat-1", "asset-beat-2"} {
+		asset := domain.AssetModel{
+			ID: id, ProjectID: domain.StringPtr("project-a"), Kind: "image", Filename: id + ".png",
+			MIMEType: "image/png", RelPath: "project-a/" + id + ".png", Source: "generated", StorageStatus: "ready",
+		}
+		if err := repo.db.Create(&asset).Error; err != nil {
+			t.Fatalf("creating asset %s: %v", id, err)
+		}
+	}
+	create := func(id, shotManifestID, assetID, createdAt string) {
+		t.Helper()
+		task := generationTaskTestModel(id, "completed", createdAt)
+		task.CreatedAt = domain.TimeFromString(createdAt)
+		task.Kind = "image"
+		task.ProjectID = domain.StringPtr("project-a")
+		task.DocumentID = domain.StringPtr("storyboard-a")
+		task.SectionID = domain.StringPtr("shared-h2-section")
+		task.ShotManifestID = domain.StringPtr(shotManifestID)
+		if err := repo.UpsertGenerationTask(task); err != nil {
+			t.Fatalf("UpsertGenerationTask(%s) error = %v", id, err)
+		}
+		if err := repo.ReplaceGenerationTaskAssetRows(id, []domain.GenerationTaskAssetModel{{TaskID: id, SlotIndex: 0, AssetID: assetID}}); err != nil {
+			t.Fatalf("ReplaceGenerationTaskAssetRows(%s) error = %v", id, err)
+		}
+		if err := repo.ReplaceGenerationTaskReferenceRows(id, []domain.GenerationTaskReferenceModel{{
+			TaskID: id, RefIndex: 0, URL: domain.StringPtr("https://example.test/reference.png"), CreatedAt: domain.TimeFromString(createdAt),
+		}}); err != nil {
+			t.Fatalf("ReplaceGenerationTaskReferenceRows(%s) error = %v", id, err)
+		}
+	}
+	create("task-beat-1", "shot-beat-1", "asset-beat-1", "2026-05-22T00:01:00Z")
+	create("task-beat-2", "shot-beat-2", "asset-beat-2", "2026-05-22T00:02:00Z")
+
+	assetID, ok, err := repo.LatestCompletedReferencedImageAssetIDByShotManifest("project-a", "shot-beat-1")
+	if err != nil {
+		t.Fatalf("LatestCompletedReferencedImageAssetIDByShotManifest() error = %v", err)
+	}
+	if !ok || assetID != "asset-beat-1" {
+		t.Fatalf("shot-beat-1 asset = %q ok=%v, want asset-beat-1", assetID, ok)
+	}
+	assetID, ok, err = repo.LatestCompletedReferencedImageAssetIDByShotManifest("project-a", "shot-beat-2")
+	if err != nil {
+		t.Fatalf("LatestCompletedReferencedImageAssetIDByShotManifest() error = %v", err)
+	}
+	if !ok || assetID != "asset-beat-2" {
+		t.Fatalf("shot-beat-2 asset = %q ok=%v, want asset-beat-2", assetID, ok)
+	}
+}
+
+func TestGenerationTaskRepositoryListsBatchInItemOrder(t *testing.T) {
+	repo, err := NewGenerationTaskRepository(filepath.Join(t.TempDir(), "workspace.db"))
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	testutil.CloseDB(t, repo.db)
+
+	for _, fixture := range []struct {
+		id        string
+		batchID   string
+		batchItem string
+		index     int
+	}{
+		{id: "task-second", batchID: "batch-1", batchItem: "item-b", index: 1},
+		{id: "task-other", batchID: "batch-2", batchItem: "item-x", index: 0},
+		{id: "task-first", batchID: "batch-1", batchItem: "item-a", index: 0},
+	} {
+		task := generationTaskTestModel(fixture.id, "submitted", "2026-05-22T00:00:00Z")
+		task.BatchID = fixture.batchID
+		task.BatchItemID = fixture.batchItem
+		task.BatchIndex = fixture.index
+		if err := repo.UpsertGenerationTask(task); err != nil {
+			t.Fatalf("UpsertGenerationTask(%s) error = %v", fixture.id, err)
+		}
+	}
+
+	tasks, err := repo.ListGenerationTasksByBatch("batch-1")
+	if err != nil {
+		t.Fatalf("ListGenerationTasksByBatch() error = %v", err)
+	}
+	if got := generationTaskModelIDs(tasks); fmt.Sprint(got) != "[task-first task-second]" {
+		t.Fatalf("task ids = %v, want batch item order", got)
+	}
+	if tasks[0].BatchItemID != "item-a" || tasks[1].BatchIndex != 1 {
+		t.Fatalf("tasks = %+v, want persisted batch metadata", tasks)
+	}
+}
