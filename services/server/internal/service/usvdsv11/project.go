@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	mediamcp "github.com/mediago-dev/mediago-drama/packages/mcp/pkg/mcp"
 	servicecanon "github.com/mediago-dev/mediago-drama/services/server/internal/service/canon"
 	"github.com/mediago-dev/mediago-drama/services/server/internal/service/model"
 	serviceshotmanifest "github.com/mediago-dev/mediago-drama/services/server/internal/service/shotmanifest"
@@ -42,26 +43,29 @@ type GenerationStateResolver func(projectID string) (GenerationProjectState, err
 
 // ProjectGateSummary explains the existing DramaGo state used to derive V11 gates.
 type ProjectGateSummary struct {
-	StoryDocumentID      string `json:"storyDocumentId,omitempty"`
-	ScreenplayDocumentID string `json:"screenplayDocumentId,omitempty"`
-	StoryboardDocuments  int    `json:"storyboardDocuments"`
-	CanonCoreCount       int    `json:"canonCoreCount"`
-	CanonApprovedCount   int    `json:"canonApprovedCount"`
-	ShotCount            int    `json:"shotCount"`
-	ReadyShotCount       int    `json:"readyShotCount"`
-	ResolvedShotCount    int    `json:"resolvedShotCount"`
-	CompiledShotCount    int    `json:"compiledShotCount"`
+	StoryDocumentID               string `json:"storyDocumentId,omitempty"`
+	EpisodeArchitectureDocumentID string `json:"episodeArchitectureDocumentId,omitempty"`
+	ScreenplayDocumentID          string `json:"screenplayDocumentId,omitempty"`
+	StoryboardDocuments           int    `json:"storyboardDocuments"`
+	CanonCoreCount                int    `json:"canonCoreCount"`
+	CanonApprovedCount            int    `json:"canonApprovedCount"`
+	ShotCount                     int    `json:"shotCount"`
+	ReadyShotCount                int    `json:"readyShotCount"`
+	ResolvedShotCount             int    `json:"resolvedShotCount"`
+	CompiledShotCount             int    `json:"compiledShotCount"`
 }
 
 // ProjectGateReport is the project-level USVDS V11 readiness projection.
 type ProjectGateReport struct {
-	ProjectID  string                 `json:"projectId"`
-	Baseline   Baseline               `json:"baseline"`
-	Ownership  []Ownership            `json:"ownership"`
-	Gates      []GateResult           `json:"gates"`
-	Workflows  []WorkflowDescriptor   `json:"workflows"`
-	Summary    ProjectGateSummary     `json:"summary"`
-	Generation GenerationProjectState `json:"generation"`
+	ProjectID    string                 `json:"projectId"`
+	Baseline     Baseline               `json:"baseline"`
+	Ownership    []Ownership            `json:"ownership"`
+	Gates        []GateResult           `json:"gates"`
+	Approvals    []ApprovalState        `json:"approvals"`
+	Workflows    []WorkflowDescriptor   `json:"workflows"`
+	NextWorkflow *WorkflowDescriptor    `json:"nextWorkflow,omitempty"`
+	Summary      ProjectGateSummary     `json:"summary"`
+	Generation   GenerationProjectState `json:"generation"`
 }
 
 // ProjectGateService derives V11 readiness from existing DramaGo domain records.
@@ -105,32 +109,32 @@ func (service *ProjectGateService) EvaluateProject(projectID string) (ProjectGat
 	}
 
 	var (
-		storyDocumentID      string
-		screenplayDocumentID string
-		storyApproved        bool
-		screenplayReviewed   bool
-		storyboardIDs        []string
+		storyDocument               mediamcp.WorkspaceDocument
+		episodeArchitectureDocument mediamcp.WorkspaceDocument
+		screenplayDocument          mediamcp.WorkspaceDocument
+		storyboardIDs               []string
 	)
 	for _, document := range documents.Documents {
 		category := model.NormalizeDocumentCategoryValue(document.Category)
-		if hasTag(document.Tags, StoryApprovedTag) {
-			storyApproved = true
-			if storyDocumentID == "" {
-				storyDocumentID = document.ID
-			}
+		if storyDocument.ID == "" && isStoryPackageDocument(document) {
+			storyDocument = document
+		}
+		if episodeArchitectureDocument.ID == "" && isEpisodeArchitectureDocument(document) {
+			episodeArchitectureDocument = document
 		}
 		if category == "screenplay" {
-			if screenplayDocumentID == "" {
-				screenplayDocumentID = document.ID
-			}
-			if hasTag(document.Tags, ScreenplayReviewedTag) {
-				screenplayReviewed = true
+			if screenplayDocument.ID == "" || hasTag(document.Tags, ScreenplayArtifactTag) {
+				screenplayDocument = document
 			}
 		}
 		if category == "storyboard" {
 			storyboardIDs = append(storyboardIDs, document.ID)
 		}
 	}
+	storyApproval := approvalState(GateStoryApproved, storyDocument)
+	screenplayApproval := approvalState(GateScreenplayReviewed, screenplayDocument)
+	storyApproved := storyApproval.Approved
+	screenplayReviewed := screenplayApproval.Approved
 
 	canonCoreCount := 0
 	canonApprovedCount := 0
@@ -185,7 +189,7 @@ func (service *ProjectGateService) EvaluateProject(projectID string) (ProjectGat
 
 	snapshot := Snapshot{
 		ProjectID:          projectID,
-		DocumentID:         firstNonEmpty(storyDocumentID, screenplayDocumentID),
+		DocumentID:         firstNonEmpty(storyDocument.ID, screenplayDocument.ID),
 		StoryApproved:      storyApproved,
 		ScreenplayReviewed: screenplayReviewed,
 		CanonApproved:      canonApproved,
@@ -209,25 +213,56 @@ func (service *ProjectGateService) EvaluateProject(projectID string) (ProjectGat
 		}
 	}
 
-	return ProjectGateReport{
+	report := ProjectGateReport{
 		ProjectID: projectID,
 		Baseline:  CurrentBaseline,
 		Ownership: OwnershipMap(),
 		Gates:     Evaluate(snapshot),
+		Approvals: []ApprovalState{storyApproval, screenplayApproval},
 		Workflows: WorkflowCatalog(),
 		Summary: ProjectGateSummary{
-			StoryDocumentID:      storyDocumentID,
-			ScreenplayDocumentID: screenplayDocumentID,
-			StoryboardDocuments:  len(storyboardIDs),
-			CanonCoreCount:       canonCoreCount,
-			CanonApprovedCount:   canonApprovedCount,
-			ShotCount:            shotCount,
-			ReadyShotCount:       readyShotCount,
-			ResolvedShotCount:    resolvedShotCount,
-			CompiledShotCount:    compiledShotCount,
+			StoryDocumentID:               storyDocument.ID,
+			EpisodeArchitectureDocumentID: episodeArchitectureDocument.ID,
+			ScreenplayDocumentID:          screenplayDocument.ID,
+			StoryboardDocuments:           len(storyboardIDs),
+			CanonCoreCount:                canonCoreCount,
+			CanonApprovedCount:            canonApprovedCount,
+			ShotCount:                     shotCount,
+			ReadyShotCount:                readyShotCount,
+			ResolvedShotCount:             resolvedShotCount,
+			CompiledShotCount:             compiledShotCount,
 		},
 		Generation: generation,
-	}, nil
+	}
+	report.NextWorkflow = recommendedWorkflow(report)
+	return report, nil
+}
+
+func isStoryPackageDocument(document mediamcp.WorkspaceDocument) bool {
+	if hasTag(document.Tags, StoryArtifactTag) || hasTag(document.Tags, StoryApprovedTag) {
+		return true
+	}
+	for _, tag := range document.Tags {
+		if strings.HasPrefix(strings.TrimSpace(tag), approvalPrefix(GateStoryApproved)) {
+			return true
+		}
+	}
+	title := strings.ToLower(strings.TrimSpace(document.Title))
+	return strings.Contains(title, "story package") ||
+		strings.Contains(title, "故事包") ||
+		strings.Contains(title, "故事大纲") ||
+		strings.Contains(title, "故事架构")
+}
+
+func isEpisodeArchitectureDocument(document mediamcp.WorkspaceDocument) bool {
+	if hasTag(document.Tags, EpisodeArchitectureArtifactTag) {
+		return true
+	}
+	title := strings.ToLower(strings.TrimSpace(document.Title))
+	return strings.Contains(title, "episode architecture") ||
+		strings.Contains(title, "episode map") ||
+		strings.Contains(title, "分集架构") ||
+		strings.Contains(title, "分集大纲")
 }
 
 func hasTag(tags []string, target string) bool {

@@ -12,6 +12,7 @@ import {
 	useMediaGenerationStore,
 } from "@/domains/generation/stores/media-generation";
 import type { ProjectConfig } from "@/domains/projects/api/projects";
+import type { USVDSV11GateReport } from "@/domains/workspace/api/usvds-v11";
 import httpClient from "@/shared/lib/http";
 import type { ApiResponse } from "@/types/api";
 import { ProjectOverview } from "./ProjectOverview";
@@ -126,6 +127,7 @@ let selectedGenerationAssetsRefreshFixture: unknown[] | null = null;
 let selectedGenerationAssetsRequestCount = 0;
 let videoGenerationTasksFixture: unknown[] = [];
 let shotManifestsFixture: unknown[] = [];
+let usvdsV11GateReportFixture: USVDSV11GateReport;
 
 describe("ProjectOverview", () => {
 	beforeEach(() => {
@@ -134,6 +136,89 @@ describe("ProjectOverview", () => {
 		selectedGenerationAssetsRequestCount = 0;
 		selectedGenerationAssetsRefreshFixture = null;
 		shotManifestsFixture = [];
+		usvdsV11GateReportFixture = {
+			projectId: "project-a",
+			baseline: {
+				branch: "v11",
+				commit: "0c68d9cbf525eee6f2a98d3098294cdedbb29e77",
+				pluginVersion: "1.2.6",
+			},
+			gates: [
+				{ gate: "story_approved", ready: true, blockers: [] },
+				{ gate: "screenplay_reviewed", ready: true, blockers: [] },
+				{ gate: "canon_locked", ready: true, blockers: [] },
+				{ gate: "continuity_resolved", ready: true, blockers: [] },
+				{
+					gate: "storyboard_ready",
+					ready: false,
+					blockers: ["ShotManifest status must be ready"],
+				},
+				{ gate: "generation_ready", ready: false, blockers: ["compiled prompt is required"] },
+			],
+			approvals: [
+				{
+					gate: "story_approved",
+					documentId: "story-1",
+					documentTitle: "Story Package",
+					documentVersion: 3,
+					contentDigest: "story-digest",
+					approved: true,
+					stale: false,
+				},
+				{
+					gate: "screenplay_reviewed",
+					documentId: "script-1",
+					documentTitle: "EP01 Screenplay",
+					documentVersion: 5,
+					contentDigest: "script-digest",
+					approved: true,
+					stale: false,
+				},
+			],
+			workflows: [
+				{
+					id: "controller",
+					label: "V11 总控",
+					description: "识别当前材料和 Gate，选择正确的 V11 阶段。",
+					skill: "usvd-v10-controller",
+					stage: "controller",
+				},
+				{
+					id: "review",
+					label: "独立审核",
+					description: "审核当前阶段产物并输出 Gate 结论。",
+					skill: "usvd-v10-04-review-continuity",
+					stage: "review",
+				},
+				{
+					id: "storyboard",
+					label: "分镜导演",
+					description: "把通过 Gate 的剧本转为分镜执行包。",
+					skill: "us-vertical-drama-storyboard-director",
+					stage: "storyboard",
+				},
+			],
+			nextWorkflow: {
+				id: "storyboard",
+				label: "分镜导演",
+				description: "把通过 Gate 的剧本转为分镜执行包。",
+				skill: "us-vertical-drama-storyboard-director",
+				stage: "storyboard",
+			},
+			generation: { total: 3, pending: 1, running: 0, completed: 2, failed: 0 },
+			summary: {
+				storyDocumentId: "story-1",
+				episodeArchitectureDocumentId: "episodes-1",
+				screenplayDocumentId: "script-1",
+				storyboardDocuments: 2,
+				canonCoreCount: 3,
+				canonApprovedCount: 3,
+				shotCount: 2,
+				readyShotCount: 1,
+				resolvedShotCount: 2,
+				compiledShotCount: 1,
+			},
+		};
 		selectedGenerationAssetsFixture = [
 			{
 				assetIndex: 0,
@@ -308,6 +393,49 @@ describe("ProjectOverview", () => {
 					skipped: 0,
 				});
 			}
+			const gateMutation = String(url).match(
+				/^\/projects\/project-a\/usvds-v11\/gates\/([^/]+)\/(approve|revoke)$/,
+			);
+			if (gateMutation) {
+				const gate = gateMutation[1] as "story_approved" | "screenplay_reviewed";
+				const action = gateMutation[2] as "approve" | "revoke";
+				const request = payload as { documentId: string; expectedVersion: number };
+				const approval = usvdsV11GateReportFixture.approvals.find((item) => item.gate === gate);
+				if (!approval) throw new Error(`missing approval fixture ${gate}`);
+				const nextVersion = request.expectedVersion + 1;
+				approval.documentVersion = nextVersion;
+				approval.approved = action === "approve";
+				approval.stale = false;
+				const gateState = usvdsV11GateReportFixture.gates.find((item) => item.gate === gate);
+				if (gateState) {
+					gateState.ready = action === "approve";
+					gateState.blockers =
+						action === "approve"
+							? []
+							: [
+									gate === "story_approved"
+										? "story approval is required"
+										: "screenplay review is required",
+								];
+				}
+				return apiResponse({
+					document: {
+						id: request.documentId,
+						title: approval.documentTitle ?? request.documentId,
+						content: "",
+						category: gate === "screenplay_reviewed" ? "screenplay" : "reference",
+						parentId: null,
+						sortOrder: 0,
+						tags: [],
+						updatedAt: "2026-10-08T02:00:00.000Z",
+						isDirty: false,
+						version: nextVersion,
+						comments: [],
+						workbenchDraft: null,
+					},
+					report: usvdsV11GateReportFixture,
+				});
+			}
 			if (String(url) !== "/generation/batches") {
 				throw new Error(`unexpected POST ${String(url)}`);
 			}
@@ -332,52 +460,7 @@ describe("ProjectOverview", () => {
 				return apiResponse([]);
 			}
 			if (requestUrl === "/projects/project-a/usvds-v11/gates") {
-				return apiResponse({
-					baseline: {
-						branch: "v11",
-						commit: "0c68d9cbf525eee6f2a98d3098294cdedbb29e77",
-						pluginVersion: "1.2.6",
-					},
-					gates: [
-						{ gate: "story_approved", ready: true, blockers: [] },
-						{ gate: "screenplay_reviewed", ready: true, blockers: [] },
-						{ gate: "canon_locked", ready: true, blockers: [] },
-						{ gate: "continuity_resolved", ready: true, blockers: [] },
-						{
-							gate: "storyboard_ready",
-							ready: false,
-							blockers: ["ShotManifest status must be ready"],
-						},
-						{ gate: "generation_ready", ready: false, blockers: ["compiled prompt is required"] },
-					],
-					workflows: [
-						{
-							id: "controller",
-							label: "V11 总控",
-							description: "识别当前材料和 Gate，选择正确的 V11 阶段。",
-							skill: "usvd-v10-controller",
-							stage: "controller",
-						},
-						{
-							id: "storyboard",
-							label: "分镜导演",
-							description: "把通过 Gate 的剧本转为分镜执行包。",
-							skill: "us-vertical-drama-storyboard-director",
-							stage: "storyboard",
-						},
-					],
-					generation: { total: 3, pending: 1, running: 0, completed: 2, failed: 0 },
-					projectId: "project-a",
-					summary: {
-						storyboardDocuments: 2,
-						canonCoreCount: 3,
-						canonApprovedCount: 3,
-						shotCount: 2,
-						readyShotCount: 1,
-						resolvedShotCount: 2,
-						compiledShotCount: 1,
-					},
-				});
+				return apiResponse(usvdsV11GateReportFixture);
 			}
 			if (requestUrl === "/projects/project-a/shot-manifests") {
 				const documentId = String(
@@ -755,6 +838,75 @@ describe("ProjectOverview", () => {
 		expect(screen.getByText("V11 1.2.6 · 0c68d9c")).toBeInTheDocument();
 		expect(screen.getByText("4/6 通过")).toBeInTheDocument();
 		expect(screen.getByText("ShotManifest status must be ready")).toBeInTheDocument();
+		expect(screen.getByText("推荐下一步：分镜导演")).toBeInTheDocument();
+		expect(screen.getAllByRole("button", { name: "撤销批准" })).toHaveLength(2);
+	});
+
+	it("revokes a current revision-bound Story approval", async () => {
+		render(
+			<SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+				<MemoryRouter initialEntries={["/projects?projectId=project-a"]}>
+					<ProjectOverview />
+				</MemoryRouter>
+			</SWRConfig>,
+		);
+
+		const revokeButtons = await screen.findAllByRole("button", { name: "撤销批准" });
+		fireEvent.click(revokeButtons[0]);
+
+		await waitFor(() => {
+			expect(httpClient.post).toHaveBeenCalledWith(
+				"/projects/project-a/usvds-v11/gates/story_approved/revoke",
+				{ documentId: "story-1", expectedVersion: 3 },
+			);
+		});
+		const approval = usvdsV11GateReportFixture.approvals.find(
+			(item) => item.gate === "story_approved",
+		);
+		expect(approval?.approved).toBe(false);
+		expect(approval?.stale).toBe(false);
+		expect(approval?.documentVersion).toBe(4);
+	});
+
+	it("re-approves a stale revision-bound Story gate", async () => {
+		const storyGate = usvdsV11GateReportFixture.gates.find(
+			(gate) => gate.gate === "story_approved",
+		);
+		const storyApproval = usvdsV11GateReportFixture.approvals.find(
+			(approval) => approval.gate === "story_approved",
+		);
+		if (!storyGate || !storyApproval) throw new Error("missing story gate fixture");
+		storyGate.ready = false;
+		storyGate.blockers = ["story approval is required"];
+		storyApproval.approved = false;
+		storyApproval.stale = true;
+		storyApproval.documentVersion = 4;
+		usvdsV11GateReportFixture.nextWorkflow = usvdsV11GateReportFixture.workflows.find(
+			(workflow) => workflow.id === "review",
+		);
+
+		render(
+			<SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+				<MemoryRouter initialEntries={["/projects?projectId=project-a"]}>
+					<ProjectOverview />
+				</MemoryRouter>
+			</SWRConfig>,
+		);
+
+		await screen.findByText("批准已过期", { exact: false });
+		expect(screen.getByText("推荐下一步：独立审核")).toBeInTheDocument();
+		fireEvent.click(screen.getByRole("button", { name: "重新批准" }));
+
+		await waitFor(() => {
+			expect(httpClient.post).toHaveBeenCalledWith(
+				"/projects/project-a/usvds-v11/gates/story_approved/approve",
+				{ documentId: "story-1", expectedVersion: 4 },
+			);
+			expect(storyApproval.approved).toBe(true);
+			expect(storyApproval.stale).toBe(false);
+			expect(storyApproval.documentVersion).toBe(5);
+		});
+		expect(screen.getAllByText("当前版本已批准", { exact: false }).length).toBeGreaterThan(0);
 	});
 
 	it("seeds a real V11 skill chip when opening a workflow", async () => {

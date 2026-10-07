@@ -318,6 +318,8 @@ func registerProjectRoutes(projectRoutes *gin.RouterGroup, handlers Handlers) {
 	projectRoutes.PUT("/shot-manifests", handlers.ShotManifests.HandleUpsert)
 	projectRoutes.POST("/shot-manifests/:shotId/compile", handlers.ShotManifests.HandleCompile)
 	projectRoutes.GET("/usvds-v11/gates", handlers.USVDSV11Gates.HandleGet)
+	projectRoutes.POST("/usvds-v11/gates/:gate/approve", handlers.USVDSV11Gates.HandleApprove)
+	projectRoutes.POST("/usvds-v11/gates/:gate/revoke", handlers.USVDSV11Gates.HandleRevoke)
 	registerWorkspaceRoutes(projectRoutes, handlers)
 	registerAgentRoutes(projectRoutes, handlers)
 	registerProjectGenerationNotificationRoutes(projectRoutes, handlers.GenerationTasks)

@@ -93,6 +93,7 @@ The next scene must inherit the prior exit state unless the approved beat sheet 
 - Baseline: USVDS v11@0c68d9cbf525eee6f2a98d3098294cdedbb29e77, plugin 1.2.6.
 - Write creator/development artifacts into the existing DramaGo project Documents; update the current artifact instead of inventing a parallel project store.
 - Use DramaGo document categories for executable artifacts: screenplay for screenplay output and storyboard for storyboard/shot output when applicable.
+- When creating/updating this stage's authoritative artifact, preserve the document tag `usvds:artifact:episode-architecture` on that DramaGo Document so Gate routing can locate it deterministically.
 - Character/scene/prop identity and variants remain owned by DramaGo Canon/Variant; shot execution and continuity remain owned by ShotManifest/ResolvedState; generation execution remains owned by GenerationTask/Asset.
 - Never create shadow USVDS project, asset, shot, approval, job, or generation state.
 - Legacy words such as APPROVED/PASS inside this Skill are narrative/workflow guidance only and must not set DramaGo human/system Gate tags by themselves. Gate state changes require the existing DramaGo approval/user action path.
