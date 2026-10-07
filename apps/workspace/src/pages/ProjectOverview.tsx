@@ -643,6 +643,9 @@ export const ProjectOverview: React.FC = () => {
 				`storyDocumentId=${report?.summary.storyDocumentId ?? ""}`,
 				`episodeArchitectureDocumentId=${report?.summary.episodeArchitectureDocumentId ?? ""}`,
 				`screenplayDocumentId=${report?.summary.screenplayDocumentId ?? ""}`,
+				`outputArtifact=${workflow.outputArtifact ?? ""}`,
+				`outputArtifactTag=${workflow.outputArtifactTag ?? ""}`,
+				`outputDocumentCategory=${workflow.outputDocumentCategory ?? ""}`,
 				blocked ? `blockedGates=${blocked}` : "blockedGates=none",
 			].join("\n");
 			useAgentStore.getState().seedComposer({
@@ -1419,6 +1422,11 @@ const USVDSV11GateSummaryCard: React.FC<{
 					</p>
 				</div>
 				<div className="flex flex-wrap items-center gap-1.5">
+					{report?.nextWorkflow ? (
+						<Button type="button" size="sm" onClick={() => onWorkflow(report.nextWorkflow!)}>
+							继续 V11：{report.nextWorkflow.label}
+						</Button>
+					) : null}
 					{isLoading ? (
 						<Badge variant="outline">
 							<Loader2 className="size-3 animate-spin" />

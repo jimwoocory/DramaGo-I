@@ -197,6 +197,9 @@ describe("ProjectOverview", () => {
 					description: "把通过 Gate 的剧本转为分镜执行包。",
 					skill: "us-vertical-drama-storyboard-director",
 					stage: "storyboard",
+					outputArtifact: "storyboard",
+					outputArtifactTag: "usvds:artifact:storyboard",
+					outputDocumentCategory: "storyboard",
 				},
 			],
 			nextWorkflow: {
@@ -205,6 +208,9 @@ describe("ProjectOverview", () => {
 				description: "把通过 Gate 的剧本转为分镜执行包。",
 				skill: "us-vertical-drama-storyboard-director",
 				stage: "storyboard",
+				outputArtifact: "storyboard",
+				outputArtifactTag: "usvds:artifact:storyboard",
+				outputDocumentCategory: "storyboard",
 			},
 			generation: { total: 3, pending: 1, running: 0, completed: 2, failed: 0 },
 			summary: {
@@ -908,6 +914,53 @@ describe("ProjectOverview", () => {
 			expect(storyApproval.documentVersion).toBe(5);
 		});
 		expect(screen.getAllByText("当前版本已批准", { exact: false }).length).toBeGreaterThan(0);
+	});
+
+	it("continues the backend-recommended V11 workflow with its output contract", async () => {
+		render(
+			<SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+				<MemoryRouter
+					initialEntries={[
+						{
+							pathname: "/projects",
+							search: "?projectId=project-a",
+							state: { projectView: "overview" },
+						},
+					]}
+				>
+					<Routes>
+						<Route
+							path="/projects"
+							element={
+								<>
+									<ProjectOverview />
+									<LocationProbe />
+								</>
+							}
+						/>
+					</Routes>
+				</MemoryRouter>
+			</SWRConfig>,
+		);
+
+		const continueButton = await screen.findByRole("button", { name: "继续 V11：分镜导演" });
+		fireEvent.click(continueButton);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("location").dataset.projectView).toBe("agent");
+			expect(useAgentStore.getState().composerSeed).toMatchObject({
+				focus: true,
+				skill: {
+					name: "us-vertical-drama-storyboard-director",
+					title: "USVDS V11 · 分镜导演",
+				},
+			});
+		});
+		const seedText = useAgentStore.getState().composerSeed?.text ?? "";
+		expect(seedText).toContain("outputArtifact=storyboard");
+		expect(seedText).toContain("outputArtifactTag=usvds:artifact:storyboard");
+		expect(seedText).toContain("outputDocumentCategory=storyboard");
+		expect(seedText).toContain("screenplayDocumentId=script-1");
 	});
 
 	it("seeds a real V11 skill chip when opening a workflow", async () => {

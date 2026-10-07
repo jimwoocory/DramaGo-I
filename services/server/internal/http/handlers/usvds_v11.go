@@ -14,6 +14,7 @@ type USVDSV11GateStore interface {
 	EvaluateProject(projectID string) (serviceusvdsv11.ProjectGateReport, error)
 	ApproveGate(projectID string, gate serviceusvdsv11.GateID, documentID string, expectedVersion int) (serviceusvdsv11.GateMutationResult, error)
 	RevokeGate(projectID string, gate serviceusvdsv11.GateID, documentID string, expectedVersion int) (serviceusvdsv11.GateMutationResult, error)
+	AdoptArtifact(projectID string, artifact serviceusvdsv11.ArtifactKind, documentID string, expectedVersion int) (serviceusvdsv11.ArtifactMutationResult, error)
 }
 
 // USVDSV11Gates handles project V11 gate routes.
@@ -108,6 +109,38 @@ func (handler USVDSV11Gates) HandleRevoke(context *gin.Context) {
 	result, err := handler.store.RevokeGate(
 		projectID,
 		serviceusvdsv11.GateID(gate),
+		payload.DocumentID,
+		payload.ExpectedVersion,
+	)
+	if err != nil {
+		status := http.StatusBadRequest
+		if servicedocument.IsWorkspaceVersionConflict(err) {
+			status = http.StatusConflict
+		}
+		httpresponse.ErrorFromStatus(context, status, err)
+		return
+	}
+	httpresponse.OK(context, result)
+}
+
+// HandleAdoptArtifact binds one existing DramaGo Document to a V11 artifact role.
+func (handler USVDSV11Gates) HandleAdoptArtifact(context *gin.Context) {
+	projectID, ok := requiredProjectID(context)
+	if !ok {
+		return
+	}
+	artifact, ok := requiredPathParam(context, "artifact", "artifact")
+	if !ok {
+		return
+	}
+	payload, err := decodeJSON[mutateUSVDSV11GateRequest](context)
+	if err != nil {
+		httpresponse.ErrorFromStatus(context, http.StatusBadRequest, err)
+		return
+	}
+	result, err := handler.store.AdoptArtifact(
+		projectID,
+		serviceusvdsv11.ArtifactKind(artifact),
 		payload.DocumentID,
 		payload.ExpectedVersion,
 	)

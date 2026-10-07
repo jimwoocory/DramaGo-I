@@ -27,6 +27,34 @@ func (fake *fakeApprovalDocuments) RequireWorkspaceDocument(_ string, documentID
 	return mediamcp.WorkspaceDocument{}, fmt.Errorf("document not found")
 }
 
+func (fake *fakeApprovalDocuments) SetWorkspaceDocumentCategory(
+	_ string,
+	input servicedocument.SetDocumentCategoryInput,
+	expectedVersion int,
+) (servicedocument.WorkspaceDocumentMetadataMutationResult, error) {
+	for index, document := range fake.documents {
+		if document.ID != input.DocumentID {
+			continue
+		}
+		current := model.NormalizedDocumentVersion(document.Version)
+		if current != expectedVersion {
+			return servicedocument.WorkspaceDocumentMetadataMutationResult{}, model.WorkspaceVersionConflictError{
+				DocumentID: document.ID,
+				Expected:   expectedVersion,
+				Current:    current,
+			}
+		}
+		before := document
+		document.Category = model.NormalizeDocumentCategoryValue(input.Category)
+		document.Version = current + 1
+		fake.documents[index] = document
+		return servicedocument.WorkspaceDocumentMetadataMutationResult{
+			Before: before, Document: document,
+		}, nil
+	}
+	return servicedocument.WorkspaceDocumentMetadataMutationResult{}, fmt.Errorf("document not found")
+}
+
 func (fake *fakeApprovalDocuments) SetWorkspaceDocumentTags(
 	_ string,
 	input servicedocument.SetDocumentTagsInput,

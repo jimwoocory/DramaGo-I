@@ -14,10 +14,12 @@ const (
 	StoryArtifactTag               = "usvds:artifact:story-package"
 	EpisodeArchitectureArtifactTag = "usvds:artifact:episode-architecture"
 	ScreenplayArtifactTag          = "usvds:artifact:screenplay"
+	StoryboardArtifactTag          = "usvds:artifact:storyboard"
 )
 
 type gateApprovalDocumentStore interface {
 	RequireWorkspaceDocument(projectID string, documentID string) (mediamcp.WorkspaceDocument, error)
+	SetWorkspaceDocumentCategory(projectID string, input servicedocument.SetDocumentCategoryInput, expectedVersion int) (servicedocument.WorkspaceDocumentMetadataMutationResult, error)
 	SetWorkspaceDocumentTags(projectID string, input servicedocument.SetDocumentTagsInput, expectedVersion int) (servicedocument.WorkspaceDocumentMetadataMutationResult, error)
 }
 

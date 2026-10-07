@@ -46,6 +46,9 @@ export interface USVDSV11Workflow {
 	description: string;
 	skill: string;
 	stage: string;
+	outputArtifact?: string;
+	outputArtifactTag?: string;
+	outputDocumentCategory?: string;
 }
 
 export interface USVDSV11ApprovalState {
@@ -81,7 +84,25 @@ export interface USVDSV11GateReport {
 
 export const usvdsV11GateKey = (projectId: string) => projectPath(projectId, "/usvds-v11/gates");
 
+export type USVDSV11ArtifactKind =
+	| "story-package"
+	| "episode-architecture"
+	| "screenplay"
+	| "storyboard";
+
+export interface USVDSV11ArtifactDescriptor {
+	kind: USVDSV11ArtifactKind;
+	tag: string;
+	documentCategory?: string;
+}
+
 export interface USVDSV11GateMutationResult {
+	document: MarkdownDocument;
+	report: USVDSV11GateReport;
+}
+
+export interface USVDSV11ArtifactMutationResult {
+	artifact: USVDSV11ArtifactDescriptor;
 	document: MarkdownDocument;
 	report: USVDSV11GateReport;
 }
@@ -113,6 +134,19 @@ export const revokeUSVDSV11Gate = (
 	documentId: string,
 	expectedVersion: number,
 ) => mutateUSVDSV11Gate(projectId, gate, "revoke", documentId, expectedVersion);
+
+export const adoptUSVDSV11Artifact = async (
+	projectId: string,
+	artifact: USVDSV11ArtifactKind,
+	documentId: string,
+	expectedVersion: number,
+) => {
+	const response = await httpClient.post<USVDSV11ArtifactMutationResult>(
+		projectPath(projectId, `/usvds-v11/artifacts/${encodeURIComponent(artifact)}/adopt`),
+		{ documentId, expectedVersion },
+	);
+	return response.data;
+};
 
 export const getUSVDSV11Gates = async (projectId: string) => {
 	const response = await httpClient.get<USVDSV11GateReport>(usvdsV11GateKey(projectId));
