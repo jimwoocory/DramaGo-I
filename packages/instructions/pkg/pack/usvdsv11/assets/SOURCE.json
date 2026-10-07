@@ -1,0 +1,8 @@
+{
+  "source_repository": "jimwoocory/US-Vertical-Drama-Studio",
+  "branch": "v11",
+  "commit": "0c68d9cbf525eee6f2a98d3098294cdedbb29e77",
+  "plugin_version": "1.2.6",
+  "skill_count": 14,
+  "compilation": "SKILL.md plus directly referenced references/contracts inlined"
+}

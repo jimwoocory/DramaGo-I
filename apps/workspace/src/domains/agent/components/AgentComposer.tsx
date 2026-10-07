@@ -58,6 +58,7 @@ export interface AgentComposerHandle {
 
 export interface AgentComposerSeedInput {
 	reference?: AgentReference;
+	skill?: Pick<AgentSkillSlashItem, "name" | "title">;
 	text?: string;
 }
 
@@ -635,6 +636,16 @@ const moveAgentSkillSlashSelection = (
 
 const insertComposerSeed = (editor: Editor, seed: AgentComposerSeedInput) => {
 	const content: Array<Record<string, unknown>> = [];
+	if (seed.skill?.name?.trim()) {
+		content.push({
+			type: "skill",
+			attrs: agentSkillAttributes({
+				description: "",
+				name: seed.skill.name.trim(),
+				title: seed.skill.title?.trim() || seed.skill.name.trim(),
+			}),
+		});
+	}
 	if (seed.reference) {
 		content.push({
 			type: "mention",

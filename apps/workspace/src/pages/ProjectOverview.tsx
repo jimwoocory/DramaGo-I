@@ -21,7 +21,7 @@ import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { VideoPlayer } from "@/components/VideoPlayer";
 import { dialogContentMotion } from "@/shared/components/ui/dialog-motion";
-import { Navigate, useLocation } from "react-router-dom";
+import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import useSWR from "swr";
 import type {
 	GenerationBatchRequest,
@@ -84,6 +84,7 @@ import {
 	getBillingSummary,
 	type BillingSummaryResponse,
 } from "@/domains/billing/api/billing";
+import { useAgentStore } from "@/domains/agent/stores";
 import { getProjectConfig, projectConfigKey } from "@/domains/projects/api/projects";
 import {
 	getWorkspaceDocumentResources,
@@ -111,10 +112,16 @@ import {
 	getUSVDSV11Gates,
 	usvdsV11GateKey,
 	type USVDSV11GateReport,
+	type USVDSV11Workflow,
 } from "@/domains/workspace/api/usvds-v11";
 import { ProjectWorkspaceShell } from "@/domains/workspace/components/ProjectWorkspaceShell";
-import { getRouteProjectId, type AgentResourceType } from "@/domains/workspace/lib/workbench-route";
+import {
+	agentProjectRouteState,
+	getRouteProjectId,
+	type AgentResourceType,
+} from "@/domains/workspace/lib/workbench-route";
 import { useProjectStore } from "@/domains/projects/stores";
+import { useAgentLayoutStore } from "@/lib/stores/agent-layout";
 import { Badge } from "@/shared/components/ui/badge";
 import { Button } from "@/shared/components/ui/button";
 import { DialogClose } from "@/shared/components/ui/dialog-dismiss";
@@ -157,6 +164,7 @@ type StoryboardVideoResourcesDialogTab = "list" | "canvas" | "preview";
 
 export const ProjectOverview: React.FC = () => {
 	const location = useLocation();
+	const navigate = useNavigate();
 	const toast = useToast();
 	const projectId = getRouteProjectId(location.search);
 	const activeProjectId = useProjectStore((state) => state.activeProjectId);
@@ -607,6 +615,24 @@ export const ProjectOverview: React.FC = () => {
 			toast,
 		],
 	);
+	const openUSVDSV11Workflow = useCallback(
+		(workflow: USVDSV11Workflow) => {
+			useAgentStore.getState().seedComposer({
+				focus: true,
+				skill: {
+					name: workflow.skill,
+					title: `USVDS V11 · ${workflow.label}`,
+				},
+				text: "请基于当前 DramaGo 项目和现有文档执行这个阶段。先检查当前 USVDS V11 Gate；产物必须继续写入或更新现有 DramaGo Documents，并由 Canon、ShotManifest、GenerationTask 承载结构化执行真相。不要创建第二套项目、资产、镜头、审批或生成状态。",
+			});
+			useAgentLayoutStore.getState().setTab("agent");
+			navigate(`${location.pathname}${location.search}${location.hash}`, {
+				replace: true,
+				state: agentProjectRouteState("agent"),
+			});
+		},
+		[location.hash, location.pathname, location.search, navigate],
+	);
 	const closeBatchGenerationDialog = useCallback((open: boolean) => {
 		if (!open) setBatchGenerationDialog(null);
 	}, []);
@@ -660,6 +686,7 @@ export const ProjectOverview: React.FC = () => {
 									error={usvdsV11GateError}
 									isLoading={isUSVDSV11GateLoading}
 									report={usvdsV11GateReport}
+									onWorkflow={openUSVDSV11Workflow}
 								/>
 								<DocumentResourcesSummary
 									assets={selectedGenerationAssets}
@@ -1296,7 +1323,8 @@ const USVDSV11GateSummaryCard: React.FC<{
 	error?: unknown;
 	isLoading: boolean;
 	report?: USVDSV11GateReport;
-}> = ({ error, isLoading, report }) => {
+	onWorkflow: (workflow: USVDSV11Workflow) => void;
+}> = ({ error, isLoading, report, onWorkflow }) => {
 	const readyCount = report?.gates.filter((gate) => gate.ready).length ?? 0;
 	return (
 		<section className="bg-card">
@@ -1365,6 +1393,36 @@ const USVDSV11GateSummaryCard: React.FC<{
 							</div>
 						))}
 					</div>
+					{report.workflows.length > 0 ? (
+						<div className="mt-3 border-t border-border pt-3">
+							<div className="mb-2 flex items-center justify-between gap-2">
+								<div>
+									<h3 className="text-xs font-semibold text-foreground">V11 创作工作流</h3>
+									<p className="mt-0.5 text-xs text-muted-foreground">
+										点击后切到 DramaGo Agent，并直接装载对应 V11 Skill。
+									</p>
+								</div>
+							</div>
+							<div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+								{report.workflows.map((workflow) => (
+									<Button
+										key={workflow.id}
+										type="button"
+										variant="outline"
+										className="h-auto min-h-14 items-start justify-start whitespace-normal px-3 py-2 text-left"
+										onClick={() => onWorkflow(workflow)}
+									>
+										<span className="min-w-0">
+											<span className="block text-xs font-semibold">{workflow.label}</span>
+											<span className="mt-1 block line-clamp-2 text-[11px] font-normal leading-4 text-muted-foreground">
+												{workflow.description}
+											</span>
+										</span>
+									</Button>
+								))}
+							</div>
+						</div>
+					) : null}
 					<div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 border-t border-border pt-2 text-xs text-muted-foreground">
 						<span>
 							V11 {report.baseline.pluginVersion} · {report.baseline.commit.slice(0, 7)}

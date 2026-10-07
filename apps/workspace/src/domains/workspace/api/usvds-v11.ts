@@ -38,6 +38,14 @@ export interface USVDSV11GateSummary {
 	compiledShotCount: number;
 }
 
+export interface USVDSV11Workflow {
+	id: string;
+	label: string;
+	description: string;
+	skill: string;
+	stage: string;
+}
+
 export interface USVDSV11GenerationState {
 	total: number;
 	pending: number;
@@ -52,6 +60,7 @@ export interface USVDSV11GateReport {
 	projectId: string;
 	baseline: USVDSV11Baseline;
 	gates: USVDSV11Gate[];
+	workflows: USVDSV11Workflow[];
 	summary: USVDSV11GateSummary;
 	generation: USVDSV11GenerationState;
 }

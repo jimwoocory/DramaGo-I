@@ -158,6 +158,7 @@ export const AgentChat: React.FC<AgentChatProps> = ({ projectId: routeProjectId 
 		const applySeed = () => {
 			const inserted = composerRef.current?.seed({
 				reference: composerSeed.reference,
+				skill: composerSeed.skill,
 				text: composerSeed.text,
 			});
 			if (!inserted) return false;

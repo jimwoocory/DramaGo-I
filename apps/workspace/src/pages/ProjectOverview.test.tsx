@@ -3,6 +3,7 @@ import type React from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { SWRConfig } from "swr";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useAgentStore } from "@/domains/agent/stores";
 import type { BillingSummaryResponse } from "@/domains/billing/api/billing";
 import { GenerationModalShell } from "@/domains/documents/components/GenerationModalShell";
 import { type MarkdownDocument, useDocumentsStore } from "@/domains/documents/stores";
@@ -129,6 +130,7 @@ let shotManifestsFixture: unknown[] = [];
 describe("ProjectOverview", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		useAgentStore.setState({ composerSeed: null });
 		selectedGenerationAssetsRequestCount = 0;
 		selectedGenerationAssetsRefreshFixture = null;
 		shotManifestsFixture = [];
@@ -347,6 +349,22 @@ describe("ProjectOverview", () => {
 							blockers: ["ShotManifest status must be ready"],
 						},
 						{ gate: "generation_ready", ready: false, blockers: ["compiled prompt is required"] },
+					],
+					workflows: [
+						{
+							id: "controller",
+							label: "V11 总控",
+							description: "识别当前材料和 Gate，选择正确的 V11 阶段。",
+							skill: "usvd-v10-controller",
+							stage: "controller",
+						},
+						{
+							id: "storyboard",
+							label: "分镜导演",
+							description: "把通过 Gate 的剧本转为分镜执行包。",
+							skill: "us-vertical-drama-storyboard-director",
+							stage: "storyboard",
+						},
 					],
 					generation: { total: 3, pending: 1, running: 0, completed: 2, failed: 0 },
 					projectId: "project-a",
@@ -737,6 +755,49 @@ describe("ProjectOverview", () => {
 		expect(screen.getByText("V11 1.2.6 · 0c68d9c")).toBeInTheDocument();
 		expect(screen.getByText("4/6 通过")).toBeInTheDocument();
 		expect(screen.getByText("ShotManifest status must be ready")).toBeInTheDocument();
+	});
+
+	it("seeds a real V11 skill chip when opening a workflow", async () => {
+		render(
+			<SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+				<MemoryRouter
+					initialEntries={[
+						{
+							pathname: "/projects",
+							search: "?projectId=project-a",
+							state: { projectView: "overview" },
+						},
+					]}
+				>
+					<Routes>
+						<Route
+							path="/projects"
+							element={
+								<>
+									<ProjectOverview />
+									<LocationProbe />
+								</>
+							}
+						/>
+					</Routes>
+				</MemoryRouter>
+			</SWRConfig>,
+		);
+
+		const workflowButton = await screen.findByRole("button", { name: /V11 总控/ });
+		fireEvent.click(workflowButton);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("location").dataset.projectView).toBe("agent");
+			expect(useAgentStore.getState().composerSeed).toMatchObject({
+				focus: true,
+				skill: {
+					name: "usvd-v10-controller",
+					title: "USVDS V11 · V11 总控",
+				},
+			});
+		});
+		expect(useAgentStore.getState().composerSeed?.text).toContain("不要创建第二套项目");
 	});
 
 	it("refreshes selected resource covers after an image generation task completes", async () => {

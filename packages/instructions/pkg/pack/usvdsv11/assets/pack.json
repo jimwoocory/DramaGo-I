@@ -1,0 +1,7 @@
+{
+  "id": "usvds-v11",
+  "name": "US Vertical Drama Studio V11",
+  "version": "1.2.6",
+  "author": "MediaGo Drama",
+  "description": "Read-only DramaGo skill snapshot compiled from USVDS v11@0c68d9c. References and contracts are inlined so the runtime remains self-contained."
+}

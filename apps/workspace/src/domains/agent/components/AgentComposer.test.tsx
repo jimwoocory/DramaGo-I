@@ -54,6 +54,33 @@ describe("AgentComposer", () => {
 		]);
 	});
 
+	it("seeds a V11 workflow as a real skill chip", async () => {
+		const ref = createRef<AgentComposerHandle>();
+		render(<AgentComposer ref={ref} />);
+
+		await waitFor(() => {
+			if (
+				!ref.current?.seed({
+					skill: { name: "usvd-v10-controller", title: "USVDS V11 · V11 总控" },
+					text: "检查当前 Gate 后继续。",
+				})
+			) {
+				throw new Error("editor is not ready");
+			}
+		});
+
+		const value = ref.current?.getValue();
+		expect(value?.text).toContain("`load_skill`");
+		expect(value?.text).toContain("`usvd-v10-controller`");
+		expect(value?.text).toContain("检查当前 Gate 后继续。");
+		expect(value?.displayText.trim()).toBe("USVDS V11 · V11 总控 检查当前 Gate 后继续。");
+		expect(value?.displaySegments[0]).toEqual({
+			type: "skill",
+			name: "usvd-v10-controller",
+			title: "USVDS V11 · V11 总控",
+		});
+	});
+
 	it("limits the chat input to an automatic 2-to-9-line height", () => {
 		const { container } = render(<AgentComposer />);
 		const composer = container.querySelector<HTMLElement>(".agent-composer-surface");

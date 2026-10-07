@@ -59,6 +59,7 @@ type ProjectGateReport struct {
 	Baseline   Baseline               `json:"baseline"`
 	Ownership  []Ownership            `json:"ownership"`
 	Gates      []GateResult           `json:"gates"`
+	Workflows  []WorkflowDescriptor   `json:"workflows"`
 	Summary    ProjectGateSummary     `json:"summary"`
 	Generation GenerationProjectState `json:"generation"`
 }
@@ -213,6 +214,7 @@ func (service *ProjectGateService) EvaluateProject(projectID string) (ProjectGat
 		Baseline:  CurrentBaseline,
 		Ownership: OwnershipMap(),
 		Gates:     Evaluate(snapshot),
+		Workflows: WorkflowCatalog(),
 		Summary: ProjectGateSummary{
 			StoryDocumentID:      storyDocumentID,
 			ScreenplayDocumentID: screenplayDocumentID,

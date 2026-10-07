@@ -15,6 +15,7 @@
     "dev:desktop": "task dev:desktop",
     "build:desktop": "task build:desktop",
     "check:go": "task -d packages/core check && task -d packages/mcp check && task -d services/server check",
+    "sync:usvds-v11": "node scripts/sync-usvds-v11-pack.mjs",
     "prepare": "husky",
     "changeset": "changeset"
   },

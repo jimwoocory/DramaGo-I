@@ -114,10 +114,10 @@
   "lint-staged": {
     "*.{js,jsx,ts,tsx,mjs,cjs}": [
       "oxlint --fix",
-      "oxfmt --write --no-error-on-unmatched-pattern"
+      "oxfmt --write --ignore-path ../../.prettierignore --no-error-on-unmatched-pattern"
     ],
     "*.{json,md,css,scss,html,yml,yaml}": [
-      "oxfmt --write --no-error-on-unmatched-pattern"
+      "oxfmt --write --ignore-path ../../.prettierignore --no-error-on-unmatched-pattern"
     ]
   },
   "packageManager": "pnpm@10.14.0"
