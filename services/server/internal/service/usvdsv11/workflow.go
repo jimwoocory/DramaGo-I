@@ -4,11 +4,14 @@ package usvdsv11
 // It does not create a second workflow runtime; DramaGo's existing Agent/Skill
 // system executes the referenced skill.
 type WorkflowDescriptor struct {
-	ID          string `json:"id"`
-	Label       string `json:"label"`
-	Description string `json:"description"`
-	Skill       string `json:"skill"`
-	Stage       string `json:"stage"`
+	ID                     string `json:"id"`
+	Label                  string `json:"label"`
+	Description            string `json:"description"`
+	Skill                  string `json:"skill"`
+	Stage                  string `json:"stage"`
+	OutputArtifact         string `json:"outputArtifact,omitempty"`
+	OutputArtifactTag      string `json:"outputArtifactTag,omitempty"`
+	OutputDocumentCategory string `json:"outputDocumentCategory,omitempty"`
 }
 
 // WorkflowCatalog returns the primary USVDS V11 creative flow exposed by DramaGo.
@@ -29,25 +32,34 @@ func WorkflowCatalog() []WorkflowDescriptor {
 			Stage:       "intake",
 		},
 		{
-			ID:          "story",
-			Label:       "故事架构",
-			Description: "建立完整 Story Package、人物关系、故事引擎与季弧。",
-			Skill:       "usvd-v10-01-story-architect",
-			Stage:       "story",
+			ID:                     "story",
+			Label:                  "故事架构",
+			Description:            "建立完整 Story Package、人物关系、故事引擎与季弧。",
+			Skill:                  "usvd-v10-01-story-architect",
+			Stage:                  "story",
+			OutputArtifact:         "story-package",
+			OutputArtifactTag:      StoryArtifactTag,
+			OutputDocumentCategory: "reference",
 		},
 		{
-			ID:          "episode",
-			Label:       "分集架构",
-			Description: "把已审故事包展开为逐集 Episode Architecture。",
-			Skill:       "usvd-v10-02-episode-architect",
-			Stage:       "episode",
+			ID:                     "episode",
+			Label:                  "分集架构",
+			Description:            "把已审故事包展开为逐集 Episode Architecture。",
+			Skill:                  "usvd-v10-02-episode-architect",
+			Stage:                  "episode",
+			OutputArtifact:         "episode-architecture",
+			OutputArtifactTag:      EpisodeArchitectureArtifactTag,
+			OutputDocumentCategory: "reference",
 		},
 		{
-			ID:          "screenplay",
-			Label:       "剧本草稿",
-			Description: "从已审分集架构起草中英对照的非投产逐场剧本。",
-			Skill:       "usvd-v10-03-creator-script-draft",
-			Stage:       "screenplay",
+			ID:                     "screenplay",
+			Label:                  "剧本草稿",
+			Description:            "从已审分集架构起草中英对照的非投产逐场剧本。",
+			Skill:                  "usvd-v10-03-creator-script-draft",
+			Stage:                  "screenplay",
+			OutputArtifact:         "screenplay",
+			OutputArtifactTag:      ScreenplayArtifactTag,
+			OutputDocumentCategory: "screenplay",
 		},
 		{
 			ID:          "review",
@@ -64,11 +76,14 @@ func WorkflowCatalog() []WorkflowDescriptor {
 			Stage:       "continuity",
 		},
 		{
-			ID:          "storyboard",
-			Label:       "分镜导演",
-			Description: "把通过 Gate 的剧本转为资产锁定、ShotManifest 与视频提示词执行包。",
-			Skill:       "us-vertical-drama-storyboard-director",
-			Stage:       "storyboard",
+			ID:                     "storyboard",
+			Label:                  "分镜导演",
+			Description:            "把通过 Gate 的剧本转为资产锁定、ShotManifest 与视频提示词执行包。",
+			Skill:                  "us-vertical-drama-storyboard-director",
+			Stage:                  "storyboard",
+			OutputArtifact:         "storyboard",
+			OutputArtifactTag:      StoryboardArtifactTag,
+			OutputDocumentCategory: "storyboard",
 		},
 	}
 }

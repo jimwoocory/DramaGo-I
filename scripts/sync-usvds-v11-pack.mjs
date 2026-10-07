@@ -70,6 +70,7 @@ const artifactTags = {
 	"us-vertical-drama-episode-architect": "usvds:artifact:episode-architecture",
 	"usvd-v10-03-creator-script-draft": "usvds:artifact:screenplay",
 	"us-vertical-drama-screenwriter": "usvds:artifact:screenplay",
+	"us-vertical-drama-storyboard-director": "usvds:artifact:storyboard",
 };
 
 const commit = execFileSync("git", ["-C", sourceRepo, "rev-parse", "HEAD"], {

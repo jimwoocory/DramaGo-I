@@ -320,6 +320,7 @@ func registerProjectRoutes(projectRoutes *gin.RouterGroup, handlers Handlers) {
 	projectRoutes.GET("/usvds-v11/gates", handlers.USVDSV11Gates.HandleGet)
 	projectRoutes.POST("/usvds-v11/gates/:gate/approve", handlers.USVDSV11Gates.HandleApprove)
 	projectRoutes.POST("/usvds-v11/gates/:gate/revoke", handlers.USVDSV11Gates.HandleRevoke)
+	projectRoutes.POST("/usvds-v11/artifacts/:artifact/adopt", handlers.USVDSV11Gates.HandleAdoptArtifact)
 	registerWorkspaceRoutes(projectRoutes, handlers)
 	registerAgentRoutes(projectRoutes, handlers)
 	registerProjectGenerationNotificationRoutes(projectRoutes, handlers.GenerationTasks)

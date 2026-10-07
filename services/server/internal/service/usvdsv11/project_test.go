@@ -76,6 +76,14 @@ func TestEvaluateProjectUsesExistingDramaGoTruth(t *testing.T) {
 	if len(report.Workflows) != 8 || report.Workflows[0].Skill != "usvd-v10-controller" || report.Workflows[7].Skill != "us-vertical-drama-storyboard-director" {
 		t.Fatalf("workflows = %+v", report.Workflows)
 	}
+	storyWorkflow := workflowByID("story")
+	if storyWorkflow == nil || storyWorkflow.OutputArtifactTag != StoryArtifactTag || storyWorkflow.OutputDocumentCategory != "reference" {
+		t.Fatalf("story workflow = %+v, want deterministic output contract", storyWorkflow)
+	}
+	storyboardWorkflow := workflowByID("storyboard")
+	if storyboardWorkflow == nil || storyboardWorkflow.OutputArtifactTag != StoryboardArtifactTag || storyboardWorkflow.OutputDocumentCategory != "storyboard" {
+		t.Fatalf("storyboard workflow = %+v, want deterministic output contract", storyboardWorkflow)
+	}
 	for _, gate := range report.Gates {
 		if !gate.Ready {
 			t.Fatalf("gate %s blocked: %v", gate.Gate, gate.Blockers)

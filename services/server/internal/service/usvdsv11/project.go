@@ -108,26 +108,13 @@ func (service *ProjectGateService) EvaluateProject(projectID string) (ProjectGat
 		return ProjectGateReport{}, fmt.Errorf("listing project documents: %w", err)
 	}
 
-	var (
-		storyDocument               mediamcp.WorkspaceDocument
-		episodeArchitectureDocument mediamcp.WorkspaceDocument
-		screenplayDocument          mediamcp.WorkspaceDocument
-		storyboardIDs               []string
-	)
+	storyDocument := selectStoryPackageDocument(documents.Documents)
+	episodeArchitectureDocument := selectEpisodeArchitectureDocument(documents.Documents)
+	screenplayDocument := selectScreenplayDocument(documents.Documents)
+	storyboardIDs := make([]string, 0)
 	for _, document := range documents.Documents {
-		category := model.NormalizeDocumentCategoryValue(document.Category)
-		if storyDocument.ID == "" && isStoryPackageDocument(document) {
-			storyDocument = document
-		}
-		if episodeArchitectureDocument.ID == "" && isEpisodeArchitectureDocument(document) {
-			episodeArchitectureDocument = document
-		}
-		if category == "screenplay" {
-			if screenplayDocument.ID == "" || hasTag(document.Tags, ScreenplayArtifactTag) {
-				screenplayDocument = document
-			}
-		}
-		if category == "storyboard" {
+		if model.NormalizeDocumentCategoryValue(document.Category) == "storyboard" ||
+			hasTag(document.Tags, StoryboardArtifactTag) {
 			storyboardIDs = append(storyboardIDs, document.ID)
 		}
 	}
@@ -236,6 +223,53 @@ func (service *ProjectGateService) EvaluateProject(projectID string) (ProjectGat
 	}
 	report.NextWorkflow = recommendedWorkflow(report)
 	return report, nil
+}
+
+func selectStoryPackageDocument(documents []mediamcp.WorkspaceDocument) mediamcp.WorkspaceDocument {
+	for _, document := range documents {
+		if hasTag(document.Tags, StoryArtifactTag) {
+			return document
+		}
+		for _, tag := range document.Tags {
+			if strings.HasPrefix(strings.TrimSpace(tag), approvalPrefix(GateStoryApproved)) {
+				return document
+			}
+		}
+	}
+	for _, document := range documents {
+		if isStoryPackageDocument(document) {
+			return document
+		}
+	}
+	return mediamcp.WorkspaceDocument{}
+}
+
+func selectEpisodeArchitectureDocument(documents []mediamcp.WorkspaceDocument) mediamcp.WorkspaceDocument {
+	for _, document := range documents {
+		if hasTag(document.Tags, EpisodeArchitectureArtifactTag) {
+			return document
+		}
+	}
+	for _, document := range documents {
+		if isEpisodeArchitectureDocument(document) {
+			return document
+		}
+	}
+	return mediamcp.WorkspaceDocument{}
+}
+
+func selectScreenplayDocument(documents []mediamcp.WorkspaceDocument) mediamcp.WorkspaceDocument {
+	for _, document := range documents {
+		if hasTag(document.Tags, ScreenplayArtifactTag) {
+			return document
+		}
+	}
+	for _, document := range documents {
+		if model.NormalizeDocumentCategoryValue(document.Category) == "screenplay" {
+			return document
+		}
+	}
+	return mediamcp.WorkspaceDocument{}
 }
 
 func isStoryPackageDocument(document mediamcp.WorkspaceDocument) bool {
