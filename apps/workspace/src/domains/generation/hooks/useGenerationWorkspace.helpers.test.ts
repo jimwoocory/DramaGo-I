@@ -160,6 +160,8 @@ describe("generation workspace helpers", () => {
 
 	it("formats status labels and byte sizes for display", () => {
 		expect(generationStatusLabel("submitted")).toBe("已提交");
+		expect(generationStatusLabel("unknown")).toBe("提交状态未知");
+		expect(generationStatusLabel("reconciling")).toBe("核对中");
 		expect(formatBytes(1536)).toBe("1.5 KB");
 	});
 

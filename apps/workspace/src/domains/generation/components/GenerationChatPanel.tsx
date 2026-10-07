@@ -540,6 +540,8 @@ const isPendingGenerationStatus = (status?: string) =>
 		"pending",
 		"processing",
 		"queued",
+		"unknown",
+		"reconciling",
 	].includes(String(status ?? "").toLowerCase());
 
 const isFailedGenerationStatus = (status?: string) =>

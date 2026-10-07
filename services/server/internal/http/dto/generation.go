@@ -42,6 +42,8 @@ type GenerationMessageRequest struct {
 	BatchID            string                               `json:"-"`
 	BatchItemID        string                               `json:"-"`
 	BatchIndex         int                                  `json:"-"`
+	IdempotencyKey     string                               `json:"idempotencyKey,omitempty"`
+	ReservedTaskID     string                               `json:"-"`
 	Kind               string                               `json:"kind" ts:"Kind"`
 	ConversationID     string                               `json:"sessionId,omitempty"`
 	ScopeID            string                               `json:"-"`

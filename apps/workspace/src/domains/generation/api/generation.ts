@@ -70,6 +70,7 @@ export type GenerationMessageRequest = Omit<GeneratedGenerationMessageRequest, "
 	sessionId?: string;
 	conversationId?: string;
 	scopeId?: string;
+	idempotencyKey?: string;
 };
 export interface GenerationBatchRequest {
 	kind?: GenerationKind;

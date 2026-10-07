@@ -387,6 +387,21 @@ func (repo *GenerationTaskRepository) UpsertGenerationTask(model domain.Generati
 	return nil
 }
 
+// CreateGenerationTaskIfAbsent atomically inserts one task by primary key.
+// It returns false when another process already reserved the same task ID.
+func (repo *GenerationTaskRepository) CreateGenerationTaskIfAbsent(model domain.GenerationTaskModel) (bool, error) {
+	model.ProjectID = domain.StringPtr(domain.CleanProjectID(domain.StringValue(model.ProjectID)))
+	model.Status = normalizeGenerationTaskStatus(model.Status)
+	result := repo.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "id"}},
+		DoNothing: true,
+	}).Create(&model)
+	if result.Error != nil {
+		return false, fmt.Errorf("reserving generation task: %w", result.Error)
+	}
+	return result.RowsAffected == 1, nil
+}
+
 // GetGenerationTaskStatus returns just the status column of one task.
 func (repo *GenerationTaskRepository) GetGenerationTaskStatus(id string) (string, error) {
 	var status string

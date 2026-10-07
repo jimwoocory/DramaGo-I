@@ -540,13 +540,21 @@ export const ProjectOverview: React.FC = () => {
 		async (settings: BatchGenerationSettings) => {
 			if (!batchGenerationDialog || !projectId) return;
 			const kind = batchGenerationDialog.kind;
-			const items = overviewBatchGenerationItems(batchGenerationDialog, settings, projectId, {
+			const rawItems = overviewBatchGenerationItems(batchGenerationDialog, settings, projectId, {
 				allAssets: mentionAssets,
 				allDocuments: mentionDocuments,
 				selectedGenerationAssets,
 				legacyShotManifestsByDocumentSection: legacyShotManifestByDocumentSection,
 			});
-			if (items.length === 0) return;
+			if (rawItems.length === 0) return;
+			const batchSubmissionKey = `ui-batch-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+			const items = rawItems.map((item, index) => ({
+				...item,
+				request: {
+					...item.request,
+					idempotencyKey: `${batchSubmissionKey}-${index}`,
+				},
+			}));
 
 			setBatchGenerationDialog(null);
 			for (const item of items) {

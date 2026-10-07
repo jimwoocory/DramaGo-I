@@ -44,6 +44,8 @@ describe("resourceGenerationStatusKind", () => {
 		expect(resourceGenerationStatusKind("success")).toBe("completed");
 		expect(resourceGenerationStatusKind("submitted")).toBe("pending");
 		expect(resourceGenerationStatusKind("running")).toBe("pending");
+		expect(resourceGenerationStatusKind("unknown")).toBe("pending");
+		expect(resourceGenerationStatusKind("reconciling")).toBe("pending");
 	});
 });
 

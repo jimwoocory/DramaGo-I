@@ -322,6 +322,8 @@ const pendingGenerationStatuses = new Set([
 	"pending",
 	"processing",
 	"queued",
+	"unknown",
+	"reconciling",
 ]);
 
 export const removeMessagesBackedByTasks = (

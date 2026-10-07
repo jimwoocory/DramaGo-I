@@ -21,6 +21,8 @@ const pendingGenerationStatuses = new Set([
 	"pending",
 	"processing",
 	"queued",
+	"unknown",
+	"reconciling",
 ]);
 
 const sortableTimeOf = (item: { createdAt?: string; updatedAt?: string }) => {
@@ -70,8 +72,15 @@ const messageFromTask = (task: GenerationTask): ChatMessage => ({
 	updatedAt: task.updatedAt,
 });
 
+const uncertainGenerationStatuses = new Set(["unknown", "reconciling"]);
+
 const generationStatusWithError = (status: string, error?: string) => {
-	if (error?.trim() && pendingGenerationStatuses.has(status.toLowerCase())) {
+	const normalized = status.toLowerCase();
+	if (
+		error?.trim() &&
+		pendingGenerationStatuses.has(normalized) &&
+		!uncertainGenerationStatuses.has(normalized)
+	) {
 		return "error";
 	}
 

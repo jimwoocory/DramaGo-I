@@ -318,6 +318,7 @@ export const useGenerationSubmit = ({
 			});
 			const requestPrompt = shouldResolvePromptFromDocumentContext ? "" : displayPrompt;
 			const localID = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+			const submissionIdempotencyKey = `ui-${localID}`;
 			const submittedAt = new Date();
 			const submittedAtValue = submittedAt.toISOString();
 			const requestReferences = requestRoute.supportsReferenceUrls
@@ -475,6 +476,7 @@ export const useGenerationSubmit = ({
 				}
 
 				const generationPayload: GenerationMessageRequest = {
+					idempotencyKey: submissionIdempotencyKey,
 					kind: requestKind,
 					conversationId: conversationId ?? undefined,
 					scopeId: resolvedConversationScopeId,
