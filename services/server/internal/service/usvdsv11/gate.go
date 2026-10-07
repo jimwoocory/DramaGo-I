@@ -5,29 +5,29 @@ import "strings"
 type GateID string
 
 const (
-	GateStoryApproved       GateID = "story_approved"
-	GateScreenplayReviewed  GateID = "screenplay_reviewed"
-	GateCanonLocked         GateID = "canon_locked"
-	GateContinuityResolved  GateID = "continuity_resolved"
-	GateStoryboardReady     GateID = "storyboard_ready"
-	GateGenerationReady     GateID = "generation_ready"
+	GateStoryApproved      GateID = "story_approved"
+	GateScreenplayReviewed GateID = "screenplay_reviewed"
+	GateCanonLocked        GateID = "canon_locked"
+	GateContinuityResolved GateID = "continuity_resolved"
+	GateStoryboardReady    GateID = "storyboard_ready"
+	GateGenerationReady    GateID = "generation_ready"
 )
 
 // Snapshot is a non-persistent projection of existing DramaGo state.
 // IDs point to current DramaGo entities; no USVDS shadow entities are created.
 type Snapshot struct {
-	ProjectID         string
-	DocumentID        string
-	StoryApproved     bool
+	ProjectID          string
+	DocumentID         string
+	StoryApproved      bool
 	ScreenplayReviewed bool
-	CanonApproved     bool
+	CanonApproved      bool
 	ContinuityResolved bool
 
-	ShotManifestID    string
-	ShotStatus        string
-	CompiledPrompt    string
+	ShotManifestID string
+	ShotStatus     string
+	CompiledPrompt string
 
-	GenerationTaskID  string
+	GenerationTaskID string
 }
 
 // GateResult reports deterministic readiness for one V11 gate.

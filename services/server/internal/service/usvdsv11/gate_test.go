@@ -42,15 +42,15 @@ func TestEvaluateBlocksGenerationUntilExistingDramaGoStateIsReady(t *testing.T) 
 
 func TestEvaluateAllowsReadyShotWithoutGenerationShadowRecord(t *testing.T) {
 	results := Evaluate(Snapshot{
-		ProjectID:           "project-1",
-		DocumentID:          "doc-1",
-		StoryApproved:       true,
-		ScreenplayReviewed:  true,
-		CanonApproved:       true,
-		ContinuityResolved:  true,
-		ShotManifestID:      "shot-1",
-		ShotStatus:          "ready",
-		CompiledPrompt:      "prompt",
+		ProjectID:          "project-1",
+		DocumentID:         "doc-1",
+		StoryApproved:      true,
+		ScreenplayReviewed: true,
+		CanonApproved:      true,
+		ContinuityResolved: true,
+		ShotManifestID:     "shot-1",
+		ShotStatus:         "ready",
+		CompiledPrompt:     "prompt",
 	})
 	for _, result := range results {
 		if !result.Ready {
