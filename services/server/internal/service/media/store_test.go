@@ -279,7 +279,7 @@ func TestSaveRemoteAssetWithOptionsReusesConversationScopedSourceURL(t *testing.
 		_, _ = response.Write([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'})
 	}))
 	defer server.Close()
-	options := MediaAssetSaveOptions{Source: MediaSourceToolbox, ConversationID: "conversation-1"}
+	options := MediaAssetSaveOptions{Source: MediaSourceToolbox, ConversationID: "conversation-1", AllowUnsafeLocalSource: true}
 
 	first, err := store.SaveRemoteAssetWithOptions(context.Background(), MediaKindImage, server.URL+"/image.png", options)
 	if err != nil {
@@ -322,10 +322,10 @@ func TestSaveRemoteAssetWithOptionsReusesConversationScopedContentHashAcrossURLs
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		requests++
 		response.Header().Set("Content-Type", "video/mp4")
-		_, _ = response.Write([]byte("same-video-bytes"))
+		_, _ = response.Write([]byte{0, 0, 0, 24, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm', 0, 0, 0, 0, 'i', 's', 'o', 'm'})
 	}))
 	defer server.Close()
-	options := MediaAssetSaveOptions{Source: MediaSourceToolbox, ConversationID: "conversation-1"}
+	options := MediaAssetSaveOptions{Source: MediaSourceToolbox, ConversationID: "conversation-1", AllowUnsafeLocalSource: true}
 
 	first, err := store.SaveRemoteAssetWithOptions(context.Background(), MediaKindVideo, server.URL+"/video-a.m4v", options)
 	if err != nil {
@@ -369,7 +369,7 @@ func TestSaveRemoteAssetWithOptionsReusesAcrossConversations(t *testing.T) {
 		context.Background(),
 		MediaKindImage,
 		server.URL+"/image.png",
-		MediaAssetSaveOptions{Source: MediaSourceToolbox, ConversationID: "conversation-1"},
+		MediaAssetSaveOptions{Source: MediaSourceToolbox, ConversationID: "conversation-1", AllowUnsafeLocalSource: true},
 	)
 	if err != nil {
 		t.Fatalf("SaveRemoteAssetWithOptions(first) error = %v", err)
@@ -378,7 +378,7 @@ func TestSaveRemoteAssetWithOptionsReusesAcrossConversations(t *testing.T) {
 		context.Background(),
 		MediaKindImage,
 		server.URL+"/image.png",
-		MediaAssetSaveOptions{Source: MediaSourceToolbox, ConversationID: "conversation-2"},
+		MediaAssetSaveOptions{Source: MediaSourceToolbox, ConversationID: "conversation-2", AllowUnsafeLocalSource: true},
 	)
 	if err != nil {
 		t.Fatalf("SaveRemoteAssetWithOptions(second) error = %v", err)

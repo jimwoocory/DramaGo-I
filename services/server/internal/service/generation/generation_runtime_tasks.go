@@ -83,6 +83,11 @@ func (workflow *GenerationService) RetryGenerationTask(ctx context.Context, id s
 	if !ok {
 		return generationMessageResponse{}, http.StatusNotFound, fmt.Errorf("generation task not found")
 	}
+	if isGenerationSubmissionUncertainStatus(task.Status) {
+		err := generationReconcileRequiredError(task)
+		_ = workflow.generationTasks.RecordAttempt(task.ID, "retry_blocked", task.Status, "供应商提交状态未核对，已阻止重复提交。", err)
+		return GenerationResponseFromTask(task), http.StatusConflict, err
+	}
 	projectID := workflow.projectIDForTask(task)
 
 	payload := generationMessageRequest{
@@ -806,6 +811,9 @@ func (workflow *GenerationService) submitPendingGeneration(
 	)
 	if err != nil {
 		messageResponse := FailedGenerationResponse(task.ID, err)
+		if isAmbiguousProviderSubmissionError(err) {
+			messageResponse = UncertainSubmissionGenerationResponse(task.ID, submittingTask.ProviderTaskID, err)
+		}
 		failedTask := GenerationTaskWithMessage(submittingTask, messageResponse)
 		failedExisted, saveErr := workflow.generationTasks.UpsertExisting(failedTask)
 		if saveErr != nil {
@@ -884,6 +892,9 @@ func (workflow *GenerationService) completeSubmittedGeneration(
 	)
 	if err != nil {
 		messageResponse := FailedGenerationResponse(task.ID, err)
+		if isAmbiguousProviderSubmissionError(err) {
+			messageResponse = UncertainSubmissionGenerationResponse(task.ID, task.ProviderTaskID, err)
+		}
 		failedTask := GenerationTaskWithMessage(runningTask, messageResponse)
 		failedTask = workflow.taskWithCurrentProgressAssets(task.ID, failedTask)
 		failedExisted, saveErr := workflow.generationTasks.UpsertExisting(failedTask)

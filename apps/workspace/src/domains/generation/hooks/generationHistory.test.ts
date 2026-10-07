@@ -152,7 +152,27 @@ describe("mergeConversationMessages", () => {
 		]);
 	});
 
-	it("treats pending tasks with persisted errors as terminal errors", () => {
+	it("keeps provider-uncertain tasks pending even when raw errors are persisted", () => {
+		for (const status of ["unknown", "reconciling"]) {
+			const messages = messagesFromTasks(
+				[
+					generationTask({
+						status,
+						error: "provider response timed out",
+						errorCode: "provider_submission_unknown",
+						errorType: "provider_unknown",
+					}),
+				],
+				[],
+				fallbackCatalog,
+			);
+			const assistantMessage = messages.find((message) => message.role === "assistant");
+			expect(assistantMessage).toMatchObject({ status, errorCode: "provider_submission_unknown" });
+			expect(isPendingVideoMessage(assistantMessage as ChatMessage)).toBe(true);
+		}
+	});
+
+	it("treats ordinary pending tasks with persisted errors as terminal errors", () => {
 		const messages = messagesFromTasks(
 			[generationTask({ error: "dmx task status failed" })],
 			[],

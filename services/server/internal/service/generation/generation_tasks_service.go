@@ -32,10 +32,11 @@ const maxBackgroundImageGenerationAge = 15 * time.Minute
 
 // GenerationTaskService persists generation task state and attempts.
 type GenerationTaskService struct {
-	mu          sync.RWMutex
-	repo        *repository.GenerationTaskRepository
-	initErr     error
-	idGenerator func(string) (string, error)
+	mu            sync.RWMutex
+	idempotencyMu sync.Mutex
+	repo          *repository.GenerationTaskRepository
+	initErr       error
+	idGenerator   func(string) (string, error)
 	// onTaskStarted fires once when a task enters an active generation state
 	// from a non-active state. It lets global clients discover newly persisted
 	// tasks without polling every task list continuously.
@@ -290,7 +291,7 @@ func (service *GenerationTaskService) ListPending(limit int) ([]GenerationTaskRe
 	service.mu.RLock()
 	defer service.mu.RUnlock()
 
-	videoModels, err := service.repo.ListPendingGenerationTasks("video", []string{"submitting", "submitted", "running", "pending", "processing", "queued"}, limit*2)
+	videoModels, err := service.repo.ListPendingGenerationTasks("video", []string{"submitting", "submitted", "running", "pending", "processing", "queued", GenerationStatusUnknown, GenerationStatusReconciling}, limit*2)
 	if err != nil {
 		return nil, err
 	}
@@ -303,7 +304,7 @@ func (service *GenerationTaskService) ListPending(limit int) ([]GenerationTaskRe
 	// "submitted" with a provider task id. We also load "running" rows so an orphaned
 	// Jimeng image (server/process died before provider returned an id) can be recovered
 	// after its provider-specific hard timeout without disturbing healthy in-flight work.
-	imageModels, err := service.repo.ListPendingGenerationTasks("image", []string{"submitted", "running"}, limit*2)
+	imageModels, err := service.repo.ListPendingGenerationTasks("image", []string{"submitted", "running", GenerationStatusUnknown, GenerationStatusReconciling}, limit*2)
 	if err != nil {
 		return nil, err
 	}
@@ -322,6 +323,12 @@ func (service *GenerationTaskService) ListPending(limit int) ([]GenerationTaskRe
 			!isStaleSubmittingGenerationTask(task, now) {
 			continue
 		}
+		if isGenerationSubmissionUncertainStatus(task.Status) &&
+			GenerationTaskProviderPollID(task) == "" {
+			// The submission may have reached the provider, but we have no
+			// provider task id to observe. Never turn this into a blind resubmit.
+			continue
+		}
 		filtered = append(filtered, task)
 	}
 	for _, task := range imageTasks {
@@ -329,6 +336,11 @@ func (service *GenerationTaskService) ListPending(limit int) ([]GenerationTaskRe
 			break
 		}
 		if GenerationTaskProviderPollID(task) == "" {
+			if isGenerationSubmissionUncertainStatus(task.Status) {
+				// No provider task id means there is nothing safe to poll. Keep
+				// the task unresolved rather than converting uncertainty into a retry.
+				continue
+			}
 			if isExpiredUnpollableJimengImage(task, now) {
 				filtered = append(filtered, task)
 			}
@@ -864,6 +876,47 @@ func (service *GenerationTaskService) UpsertExisting(task GenerationTaskRecord) 
 	return service.upsertTask(task, true, true)
 }
 
+func generationTaskPersistenceModel(task GenerationTaskRecord, paramsJSON string, sourceRefsJSON string) generationTaskModel {
+	return generationTaskModel{
+		ID:              task.ID,
+		BatchID:         strings.TrimSpace(task.BatchID),
+		BatchItemID:     strings.TrimSpace(task.BatchItemID),
+		BatchIndex:      task.BatchIndex,
+		ProviderTaskID:  task.ProviderTaskID,
+		ConversationID:  domain.StringPtr(task.ConversationID),
+		ProjectID:       domain.StringPtr(GenerationProjectIDForRequest(task.ProjectID, "")),
+		DocumentID:      domain.StringPtr(task.DocumentID),
+		SectionID:       domain.StringPtr(task.SectionID),
+		ShotManifestID:  domain.StringPtr(task.ShotManifestID),
+		CapabilityID:    domain.StringPtr(task.CapabilityID),
+		ResourceType:    domain.StringPtr(task.ResourceType),
+		Kind:            task.Kind,
+		RouteID:         task.RouteID,
+		FamilyID:        task.FamilyID,
+		VersionID:       task.VersionID,
+		Provider:        task.Provider,
+		ModelID:         task.ModelID,
+		Model:           task.Model,
+		Prompt:          task.Prompt,
+		SourceRefsJSON:  sourceRefsJSON,
+		ParamsJSON:      paramsJSON,
+		Status:          strings.ToLower(strings.TrimSpace(task.Status)),
+		Message:         task.Message,
+		Text:            task.Text,
+		InputTokens:     task.Usage.InputTokens,
+		OutputTokens:    task.Usage.OutputTokens,
+		TotalTokens:     task.Usage.TotalTokens,
+		ReasoningTokens: task.Usage.ReasoningTokens,
+		CachedTokens:    task.Usage.CachedTokens,
+		Error:           task.Error,
+		ErrorCode:       task.ErrorCode,
+		ErrorType:       task.ErrorType,
+		Retryable:       task.Retryable,
+		CreatedAt:       domain.TimeFromString(task.CreatedAt),
+		UpdatedAt:       domain.TimeFromString(task.UpdatedAt),
+	}
+}
+
 func (service *GenerationTaskService) upsertTask(task GenerationTaskRecord, requireExisting bool, notifyCompletion bool) (bool, error) {
 	if service.initErr != nil {
 		return false, service.initErr
@@ -935,44 +988,9 @@ func (service *GenerationTaskService) upsertTask(task GenerationTaskRecord, requ
 	if err := service.applyDefaultSelectedAssetLocked(&task); err != nil {
 		return false, err
 	}
-	if err := service.repo.UpsertGenerationTask(generationTaskModel{
-		ID:              task.ID,
-		BatchID:         strings.TrimSpace(task.BatchID),
-		BatchItemID:     strings.TrimSpace(task.BatchItemID),
-		BatchIndex:      task.BatchIndex,
-		ProviderTaskID:  task.ProviderTaskID,
-		ConversationID:  domain.StringPtr(task.ConversationID),
-		ProjectID:       domain.StringPtr(GenerationProjectIDForRequest(task.ProjectID, "")),
-		DocumentID:      domain.StringPtr(task.DocumentID),
-		SectionID:       domain.StringPtr(task.SectionID),
-		ShotManifestID:  domain.StringPtr(task.ShotManifestID),
-		CapabilityID:    domain.StringPtr(task.CapabilityID),
-		ResourceType:    domain.StringPtr(task.ResourceType),
-		Kind:            task.Kind,
-		RouteID:         task.RouteID,
-		FamilyID:        task.FamilyID,
-		VersionID:       task.VersionID,
-		Provider:        task.Provider,
-		ModelID:         task.ModelID,
-		Model:           task.Model,
-		Prompt:          task.Prompt,
-		SourceRefsJSON:  string(sourceRefsJSON),
-		ParamsJSON:      string(paramsJSON),
-		Status:          strings.ToLower(strings.TrimSpace(task.Status)),
-		Message:         task.Message,
-		Text:            task.Text,
-		InputTokens:     task.Usage.InputTokens,
-		OutputTokens:    task.Usage.OutputTokens,
-		TotalTokens:     task.Usage.TotalTokens,
-		ReasoningTokens: task.Usage.ReasoningTokens,
-		CachedTokens:    task.Usage.CachedTokens,
-		Error:           task.Error,
-		ErrorCode:       task.ErrorCode,
-		ErrorType:       task.ErrorType,
-		Retryable:       task.Retryable,
-		CreatedAt:       domain.TimeFromString(task.CreatedAt),
-		UpdatedAt:       domain.TimeFromString(task.UpdatedAt),
-	}); err != nil {
+	if err := service.repo.UpsertGenerationTask(
+		generationTaskPersistenceModel(task, string(paramsJSON), string(sourceRefsJSON)),
+	); err != nil {
 		return false, err
 	}
 	if err := service.syncNormalizedTaskReferenceRowsLocked(task); err != nil {

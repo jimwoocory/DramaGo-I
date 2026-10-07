@@ -94,11 +94,12 @@ type MediaAssetUpdateRequest struct {
 
 // MediaAssetSaveOptions describes where a new media asset should live.
 type MediaAssetSaveOptions struct {
-	ProjectID      string
-	Source         string
-	ConversationID string
-	SectionID      string
-	Filename       string
+	ProjectID              string
+	Source                 string
+	ConversationID         string
+	SectionID              string
+	Filename               string
+	AllowUnsafeLocalSource bool
 }
 
 type mediaAssetModel = domain.AssetModel
@@ -505,12 +506,15 @@ func (store *MediaAssets) saveRemoteAssetWithOptions(ctx context.Context, kind s
 	} else if ok {
 		return existing, nil
 	}
+	if err := validateRemoteMediaURL(ctx, remoteURL, options.AllowUnsafeLocalSource); err != nil {
+		return MediaAsset{}, err
+	}
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, remoteURL, nil)
 	if err != nil {
 		return MediaAsset{}, err
 	}
-	response, err := mediaAssetHTTPClient.Do(request)
+	response, err := remoteMediaHTTPClient(options.AllowUnsafeLocalSource).Do(request)
 	if err != nil {
 		return MediaAsset{}, err
 	}
@@ -528,12 +532,9 @@ func (store *MediaAssets) saveRemoteAssetWithOptions(ctx context.Context, kind s
 		return MediaAsset{}, err
 	}
 
-	mimeType := response.Header.Get("Content-Type")
-	if mimeType == "" {
-		mimeType = http.DetectContentType(data)
-	}
-	if kind == "" {
-		kind = shared.KindFromMIMEType(mimeType)
+	kind, mimeType, err := validatedRemoteMediaType(kind, response.Header.Get("Content-Type"), data)
+	if err != nil {
+		return MediaAsset{}, err
 	}
 
 	filename := filenameFromURL(remoteURL)

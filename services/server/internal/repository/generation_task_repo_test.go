@@ -212,6 +212,39 @@ func TestGenerationTaskRepositoryLifecycle(t *testing.T) {
 	}
 }
 
+func TestCreateGenerationTaskIfAbsentIsAtomicByTaskID(t *testing.T) {
+	repo, err := NewGenerationTaskRepository(filepath.Join(t.TempDir(), "workspace.db"))
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	testutil.CloseDB(t, repo.db)
+
+	first := generationTaskTestModel("task-idempotent", "queued", "2026-05-22T00:00:00Z")
+	first.Prompt = "first request"
+	created, err := repo.CreateGenerationTaskIfAbsent(first)
+	if err != nil || !created {
+		t.Fatalf("first reserve created=%v err=%v", created, err)
+	}
+
+	second := first
+	second.Prompt = "must not overwrite"
+	created, err = repo.CreateGenerationTaskIfAbsent(second)
+	if err != nil {
+		t.Fatalf("second reserve error = %v", err)
+	}
+	if created {
+		t.Fatal("second reserve created=true, want existing task")
+	}
+
+	persisted, err := repo.GetGenerationTask(first.ID)
+	if err != nil {
+		t.Fatalf("GetGenerationTask() error = %v", err)
+	}
+	if persisted.Prompt != "first request" {
+		t.Fatalf("persisted prompt = %q, want first reservation unchanged", persisted.Prompt)
+	}
+}
+
 func TestGenerationTaskRepositoryListDefaultLimitAndOffset(t *testing.T) {
 	repo, err := NewGenerationTaskRepository(filepath.Join(t.TempDir(), "workspace.db"))
 	if err != nil {

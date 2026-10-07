@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -16,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -822,6 +824,146 @@ func TestCreateVideoGenerationSubmitsProviderTaskInBackground(t *testing.T) {
 	}
 	if provider.request == nil || provider.request.Prompt != "make a short flower field video" {
 		t.Fatalf("provider request = %+v, want submitted prompt", provider.request)
+	}
+}
+
+func TestCreateVideoGenerationIsIdempotentAcrossDuplicateSubmissions(t *testing.T) {
+	repo, err := newTestGenerationTaskRepository(t, filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	store := NewGenerationTaskServiceFromRepository(repo, nil, nil)
+	settingsSvc := settings.NewSettings(&generationTestAPIKeyStore{
+		values: map[string]string{
+			coregeneration.ProviderDMX: "sk-video",
+		},
+	})
+	release := make(chan struct{})
+	provider := &countingVideoGenerateProvider{
+		started: make(chan int, 2),
+		release: release,
+		response: coregeneration.Response{
+			ID:     "dmx.seedance-2.0-fast:idempotent-provider",
+			Status: "submitted",
+		},
+	}
+	workflow := NewGenerationService(settingsSvc, store, nil)
+	workflow.generationProviderFactory = func(route coregeneration.ModelRoute) (coregeneration.Provider, error) {
+		return provider, nil
+	}
+
+	request := GenerationMessageRequest{
+		IdempotencyKey: "video-idempotency-key-0001",
+		Kind:           string(coregeneration.KindVideo),
+		RouteID:        coregeneration.RouteDMXSeedance20Fast,
+		ModelID:        coregeneration.ModelJimengSeedance2Fast,
+		Model:          "doubao-seedance-2-0-fast-260128",
+		Prompt:         "one idempotent video",
+		Params: map[string]any{
+			"duration": "5",
+			"ratio":    "16:9",
+		},
+	}
+	first, status, err := workflow.CreateGenerationMessage(context.Background(), request)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("first CreateGenerationMessage() status=%d err=%v", status, err)
+	}
+	if !strings.HasPrefix(first.ID, "generation-idem-") {
+		t.Fatalf("first task id = %q, want deterministic idempotency task id", first.ID)
+	}
+	select {
+	case calls := <-provider.started:
+		if calls != 1 {
+			t.Fatalf("provider calls after first submit = %d, want 1", calls)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("provider first submission did not start")
+	}
+
+	second, status, err := workflow.CreateGenerationMessage(context.Background(), request)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("second CreateGenerationMessage() status=%d err=%v", status, err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("duplicate task id = %q, want %q", second.ID, first.ID)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if calls := provider.CallCount(); calls != 1 {
+		t.Fatalf("provider calls after duplicate = %d, want 1", calls)
+	}
+
+	conflictRequest := request
+	conflictRequest.Prompt = "different request with the same key"
+	_, status, err = workflow.CreateGenerationMessage(context.Background(), conflictRequest)
+	if status != http.StatusConflict || !errors.Is(err, ErrGenerationIdempotencyConflict) {
+		t.Fatalf("conflicting request status=%d err=%v, want 409 idempotency conflict", status, err)
+	}
+	if calls := provider.CallCount(); calls != 1 {
+		t.Fatalf("provider calls after conflict = %d, want 1", calls)
+	}
+
+	close(release)
+	_ = waitForGenerationTask(t, store, first.ID, func(task GenerationTaskRecord) bool {
+		return strings.TrimSpace(task.ProviderTaskID) != ""
+	})
+}
+
+func TestAmbiguousVideoSubmissionEntersUnknownAndBlocksRetry(t *testing.T) {
+	repo, err := newTestGenerationTaskRepository(t, filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	store := NewGenerationTaskServiceFromRepository(repo, nil, nil)
+	settingsSvc := settings.NewSettings(&generationTestAPIKeyStore{
+		values: map[string]string{
+			coregeneration.ProviderDMX: "sk-video",
+		},
+	})
+	provider := &countingVideoGenerateProvider{
+		started: make(chan int, 2),
+		err:     context.DeadlineExceeded,
+	}
+	workflow := NewGenerationService(settingsSvc, store, nil)
+	workflow.generationProviderFactory = func(route coregeneration.ModelRoute) (coregeneration.Provider, error) {
+		return provider, nil
+	}
+
+	response, status, err := workflow.CreateGenerationMessage(context.Background(), GenerationMessageRequest{
+		IdempotencyKey: "video-reconcile-key-0001",
+		Kind:           string(coregeneration.KindVideo),
+		RouteID:        coregeneration.RouteDMXSeedance20Fast,
+		ModelID:        coregeneration.ModelJimengSeedance2Fast,
+		Model:          "doubao-seedance-2-0-fast-260128",
+		Prompt:         "submission with ambiguous provider response",
+		Params: map[string]any{
+			"duration": "5",
+			"ratio":    "16:9",
+		},
+	})
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("CreateGenerationMessage() status=%d err=%v", status, err)
+	}
+	select {
+	case <-provider.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("provider submission did not start")
+	}
+	task := waitForGenerationTask(t, store, response.ID, func(task GenerationTaskRecord) bool {
+		return task.Status == GenerationStatusUnknown
+	})
+	if task.ErrorCode != "provider_submission_unknown" || task.ErrorType != "provider_unknown" || task.Retryable {
+		t.Fatalf("reconciling task = %+v", task)
+	}
+
+	retryResponse, retryStatus, retryErr := workflow.RetryGenerationTask(context.Background(), task.ID)
+	if retryStatus != http.StatusConflict || retryErr == nil {
+		t.Fatalf("RetryGenerationTask() status=%d err=%v, want conflict", retryStatus, retryErr)
+	}
+	if retryResponse.Status != GenerationStatusUnknown {
+		t.Fatalf("retry response = %+v, want unknown task", retryResponse)
+	}
+	if calls := provider.CallCount(); calls != 1 {
+		t.Fatalf("provider calls after blocked retry = %d, want 1", calls)
 	}
 }
 
@@ -1651,6 +1793,68 @@ func TestGetGenerationVideoPollsProviderTaskID(t *testing.T) {
 	}
 }
 
+func TestReconcilingGenerationTaskWithProviderIDCanRecoverByPolling(t *testing.T) {
+	repo, err := newTestGenerationTaskRepository(t, filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatalf("NewGenerationTaskRepository() error = %v", err)
+	}
+	store := NewGenerationTaskServiceFromRepository(repo, nil, nil)
+	settingsSvc := settings.NewSettings(&generationTestAPIKeyStore{
+		values: map[string]string{
+			coregeneration.ProviderDMX: "sk-video",
+		},
+	})
+	provider := &recordingVideoProvider{
+		response: coregeneration.Response{
+			ID:     "dmx.seedance-2.0-fast:provider-reconcile",
+			Status: "completed",
+		},
+	}
+	workflow := NewGenerationService(settingsSvc, store, nil)
+	workflow.generationProviderFactory = func(route coregeneration.ModelRoute) (coregeneration.Provider, error) {
+		return provider, nil
+	}
+	task := GenerationTaskRecord{
+		ID:             "generation-reconcile",
+		ProviderTaskID: "dmx.seedance-2.0-fast:provider-reconcile",
+		Kind:           string(coregeneration.KindVideo),
+		RouteID:        coregeneration.RouteDMXSeedance20Fast,
+		FamilyID:       coregeneration.FamilySeedance,
+		VersionID:      coregeneration.VersionSeedance20Fast,
+		Provider:       coregeneration.ProviderDMX,
+		ModelID:        coregeneration.ModelJimengSeedance2Fast,
+		Model:          "doubao-seedance-2-0-fast-260128",
+		Prompt:         "reconcile this video",
+		Status:         GenerationStatusReconciling,
+		Message:        "核对中",
+		Error:          "provider timeout",
+		ErrorCode:      "provider_submission_unknown",
+		ErrorType:      "provider_unknown",
+	}
+	if err := store.Upsert(task); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+	pending, err := store.ListPending(10)
+	if err != nil {
+		t.Fatalf("ListPending() error = %v", err)
+	}
+	if !slicesContainsTaskID(pending, task.ID) {
+		t.Fatalf("pending = %+v, want reconciling task", pending)
+	}
+
+	workflow.PollGenerationTask(context.Background(), task)
+	recovered, ok, err := store.Get(task.ID)
+	if err != nil || !ok {
+		t.Fatalf("Get() ok=%v err=%v", ok, err)
+	}
+	if recovered.Status != "completed" || recovered.Error != "" || recovered.ErrorCode != "" {
+		t.Fatalf("recovered = %+v, want completed task with cleared uncertainty", recovered)
+	}
+	if provider.getID != task.ProviderTaskID {
+		t.Fatalf("provider get id = %q, want %q", provider.getID, task.ProviderTaskID)
+	}
+}
+
 func TestGetGenerationVideoUsesStoredImageKind(t *testing.T) {
 	repo, err := newTestGenerationTaskRepository(t, filepath.Join(t.TempDir(), "settings.db"))
 	if err != nil {
@@ -1717,7 +1921,7 @@ func TestGetGenerationVideoCachesRemoteAssetWithTaskAssetTitle(t *testing.T) {
 	})
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Content-Type", "video/mp4")
-		_, _ = response.Write([]byte("video-bytes"))
+		_, _ = response.Write([]byte{0, 0, 0, 24, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm', 0, 0, 0, 0, 'i', 's', 'o', 'm'})
 	}))
 	defer server.Close()
 	remoteURL := server.URL + "/oYHvcbgRRZZwJQjqSegmI9QeVXH5ABACQx.mp4"
@@ -1726,10 +1930,11 @@ func TestGetGenerationVideoCachesRemoteAssetWithTaskAssetTitle(t *testing.T) {
 		media.MediaKindVideo,
 		remoteURL,
 		media.MediaAssetSaveOptions{
-			ProjectID:      "project-alpha",
-			Source:         media.MediaSourceGeneration,
-			ConversationID: "project-alpha-video",
-			SectionID:      "section_reel_01",
+			ProjectID:              "project-alpha",
+			Source:                 media.MediaSourceGeneration,
+			ConversationID:         "project-alpha-video",
+			SectionID:              "section_reel_01",
+			AllowUnsafeLocalSource: true,
 		},
 	)
 	if err != nil {
@@ -2356,6 +2561,47 @@ type blockingVideoGenerateProvider struct {
 	release  chan struct{}
 	response coregeneration.Response
 	err      error
+}
+
+type countingVideoGenerateProvider struct {
+	mu       sync.Mutex
+	calls    int
+	started  chan int
+	release  <-chan struct{}
+	response coregeneration.Response
+	err      error
+}
+
+func (provider *countingVideoGenerateProvider) Name() string {
+	return "counting-video"
+}
+
+func (provider *countingVideoGenerateProvider) Generate(ctx context.Context, _ coregeneration.Request) (coregeneration.Response, error) {
+	provider.mu.Lock()
+	provider.calls++
+	calls := provider.calls
+	provider.mu.Unlock()
+	if provider.started != nil {
+		provider.started <- calls
+	}
+	if provider.release != nil {
+		select {
+		case <-provider.release:
+		case <-ctx.Done():
+			return coregeneration.Response{}, ctx.Err()
+		}
+	}
+	return provider.response, provider.err
+}
+
+func (provider *countingVideoGenerateProvider) Get(context.Context, string) (coregeneration.Response, error) {
+	return coregeneration.Response{}, nil
+}
+
+func (provider *countingVideoGenerateProvider) CallCount() int {
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	return provider.calls
 }
 
 type blockingMultiAssetImageGenerateProvider struct {

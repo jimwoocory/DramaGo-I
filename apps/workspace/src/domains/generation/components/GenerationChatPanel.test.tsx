@@ -42,6 +42,45 @@ describe("GenerationChatPanel", () => {
 		expect(screen.getByText("文本生成中...")).toBeTruthy();
 	});
 
+	it("shows provider uncertainty as pending status instead of failure", () => {
+		HTMLElement.prototype.scrollTo = vi.fn();
+		const onRefreshVideo = vi.fn();
+		const entries: GenerationEntry[] = [
+			{
+				id: "task-reconciling",
+				kind: "video",
+				status: "reconciling",
+				content: "供应商提交结果不确定，正在核对。",
+				prompt: "生成视频",
+				error: "provider timeout",
+				errorCode: "provider_submission_unknown",
+				errorType: "provider_unknown",
+				assistantMessage: {
+					id: "task-reconciling",
+					role: "assistant",
+					kind: "video",
+					status: "reconciling",
+					content: "供应商提交结果不确定，正在核对。",
+					error: "provider timeout",
+					errorCode: "provider_submission_unknown",
+					errorType: "provider_unknown",
+				},
+			},
+		];
+
+		render(
+			<GenerationChatPanel
+				entries={entries}
+				onRefreshVideo={onRefreshVideo}
+				onSelectEntry={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByText("核对中")).toBeTruthy();
+		expect(screen.getByRole("button", { name: /检查/ })).toBeTruthy();
+		expect(screen.queryByText("生成失败")).toBeNull();
+	});
+
 	it("collapses long user prompts consistently across generation kinds", () => {
 		HTMLElement.prototype.scrollTo = vi.fn();
 		const longPrompt = [

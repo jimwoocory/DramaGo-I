@@ -2,6 +2,7 @@ package generation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -300,8 +301,6 @@ func (workflow *GenerationService) CreateGenerationMessage(ctx context.Context, 
 	if payload.ProjectName == "" {
 		payload.ProjectName = workflow.generationProjectName(projectID)
 	}
-	workflow.appendStudioUserTranscript(conversation, payload)
-
 	referenceURLs, err := workflow.resolveGenerationReferences(route, payload)
 	if err != nil {
 		return generationMessageResponse{}, http.StatusBadRequest, err
@@ -317,19 +316,34 @@ func (workflow *GenerationService) CreateGenerationMessage(ctx context.Context, 
 	if err != nil {
 		return generationMessageResponse{}, http.StatusServiceUnavailable, err
 	}
+	if strings.TrimSpace(payload.IdempotencyKey) != "" {
+		reservedTask, created, reserveErr := workflow.reserveGenerationIdempotency(&payload, route, referenceURLs)
+		if reserveErr != nil {
+			if errors.Is(reserveErr, ErrGenerationIdempotencyConflict) {
+				return generationMessageResponse{}, http.StatusConflict, reserveErr
+			}
+			return generationMessageResponse{}, http.StatusBadRequest, reserveErr
+		}
+		if !created {
+			return GenerationResponseFromTask(reservedTask), http.StatusOK, nil
+		}
+		generationRequest = GenerationRequestFromMessage(payload, route, referenceURLs)
+		generationRequest.Prompt = workflow.providerPromptForGeneration(route, payload)
+	}
+	workflow.appendStudioUserTranscript(conversation, payload)
 	if ShouldSubmitGenerationInBackground(route) {
-		messageResponse := SubmittingGenerationResponse("", coregeneration.Kind(payload.Kind))
+		messageResponse := SubmittingGenerationResponse(payload.ReservedTaskID, coregeneration.Kind(payload.Kind))
 		shouldSubmit := true
 		var task GenerationTaskRecord
 		if shouldQueueJimengSeedanceSubmission(route) {
 			workflow.jimengSeedanceQueueMu.Lock()
-			queueBlocked, queueErr := workflow.jimengSeedanceSubmissionQueueBlocked("")
+			queueBlocked, queueErr := workflow.jimengSeedanceSubmissionQueueBlocked(payload.ReservedTaskID)
 			if queueErr != nil {
 				workflow.jimengSeedanceQueueMu.Unlock()
 				return generationMessageResponse{}, http.StatusInternalServerError, queueErr
 			}
 			if queueBlocked {
-				messageResponse = QueuedGenerationResponse("", coregeneration.Kind(payload.Kind))
+				messageResponse = QueuedGenerationResponse(payload.ReservedTaskID, coregeneration.Kind(payload.Kind))
 				shouldSubmit = false
 			}
 			task = GenerationTaskFromMessage(payload, route, messageResponse)
@@ -353,7 +367,7 @@ func (workflow *GenerationService) CreateGenerationMessage(ctx context.Context, 
 		return messageResponse, http.StatusOK, nil
 	}
 	if ShouldRunGenerationInBackground(route) {
-		messageResponse := SubmittedGenerationResponse("", coregeneration.Kind(payload.Kind))
+		messageResponse := SubmittedGenerationResponse(payload.ReservedTaskID, coregeneration.Kind(payload.Kind))
 		task := GenerationTaskFromMessage(payload, route, messageResponse)
 		if err := workflow.generationTasks.Upsert(task); err != nil {
 			return generationMessageResponse{}, http.StatusInternalServerError, err
@@ -375,7 +389,7 @@ func (workflow *GenerationService) CreateGenerationMessage(ctx context.Context, 
 		generationProviderLogContext{Action: "create"},
 	)
 	if err != nil {
-		messageResponse := FailedGenerationResponse("", err)
+		messageResponse := FailedGenerationResponse(payload.ReservedTaskID, err)
 		workflow.appendStudioAssistantTranscript(conversation, messageResponse)
 		if ShouldPersistGenerationTask(route) {
 			task := GenerationTaskFromMessage(payload, route, messageResponse)
@@ -391,7 +405,7 @@ func (workflow *GenerationService) CreateGenerationMessage(ctx context.Context, 
 	}
 	response = workflow.cacheGenerationResponseAssetsWithOptions(ctx, response, generationMediaSaveOptionsWithTitle(projectID, payload.ConversationID, payload.SectionID, payload.AssetTitle))
 
-	messageResponse := generationResponseWithAssetTitle(GenerationResponseFromCore(response, payload.Kind), payload.AssetTitle)
+	messageResponse := generationResponseWithReservedTaskID(payload, generationResponseWithAssetTitle(GenerationResponseFromCore(response, payload.Kind), payload.AssetTitle))
 	if ShouldPersistGenerationTask(route) {
 		task := GenerationTaskFromMessage(payload, route, messageResponse)
 		// A synchronous completed task has no persisted notification yet. Suppress

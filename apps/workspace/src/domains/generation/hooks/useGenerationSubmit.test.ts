@@ -376,6 +376,7 @@ describe("useGenerationSubmit", () => {
 		expect(sendGenerationMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				conversationId: "session-1",
+				idempotencyKey: expect.stringMatching(/^ui-local-/),
 				familyId: imageFamily.id,
 				kind: "image",
 				model: "image-model",

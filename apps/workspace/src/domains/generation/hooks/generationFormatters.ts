@@ -279,6 +279,8 @@ export const generationStatusLabel = (status: string) => {
 		pending: "等待中",
 		processing: "处理中",
 		queued: "排队中",
+		unknown: "提交状态未知",
+		reconciling: "核对中",
 		completed: "已完成",
 		succeeded: "已成功",
 		success: "已成功",

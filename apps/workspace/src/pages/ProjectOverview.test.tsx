@@ -7,6 +7,7 @@ import { useAgentStore } from "@/domains/agent/stores";
 import type { BillingSummaryResponse } from "@/domains/billing/api/billing";
 import { GenerationModalShell } from "@/domains/documents/components/GenerationModalShell";
 import { type MarkdownDocument, useDocumentsStore } from "@/domains/documents/stores";
+import type { GenerationBatchRequest } from "@/domains/generation/api/generation";
 import {
 	type MediaGenerationDialogRequest,
 	useMediaGenerationStore,
@@ -1357,6 +1358,12 @@ describe("ProjectOverview", () => {
 				}),
 			],
 		});
+		const batchIdempotencyKeys = (payload as GenerationBatchRequest).items.map(
+			(item) => item.request.idempotencyKey,
+		);
+		expect(batchIdempotencyKeys).toHaveLength(2);
+		expect(batchIdempotencyKeys.every((key) => /^ui-batch-/.test(key ?? ""))).toBe(true);
+		expect(new Set(batchIdempotencyKeys).size).toBe(2);
 		expect(useMediaGenerationStore.getState().activeRequest).toBeNull();
 
 		await waitFor(() => {
