@@ -32,9 +32,9 @@ type Snapshot struct {
 
 // GateResult reports deterministic readiness for one V11 gate.
 type GateResult struct {
-	Gate     GateID
-	Ready    bool
-	Blockers []string
+	Gate     GateID   `json:"gate"`
+	Ready    bool     `json:"ready"`
+	Blockers []string `json:"blockers"`
 }
 
 // Evaluate returns the deterministic P0 V11 gate state from DramaGo-owned

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	serviceusvdsv11 "github.com/mediago-dev/mediago-drama/services/server/internal/service/usvdsv11"
 )
 
 func (workflow *GenerationService) applyShotManifestCompilation(payload *generationMessageRequest) (int, error) {
@@ -25,8 +27,8 @@ func (workflow *GenerationService) applyShotManifestCompilation(payload *generat
 	if err != nil {
 		return http.StatusBadRequest, err
 	}
-	if strings.TrimSpace(compiled.Prompt) == "" {
-		return http.StatusBadRequest, fmt.Errorf("Shot Manifest 编译结果为空")
+	if err := serviceusvdsv11.ValidateGenerationCompileResult(compiled); err != nil {
+		return http.StatusConflict, err
 	}
 
 	// Shot Manifest is the execution contract. When it is present, discard free-form

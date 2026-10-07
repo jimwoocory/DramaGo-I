@@ -27,8 +27,11 @@ type CompiledReference struct {
 
 // CompileResult is the deterministic generation payload for one Shot Manifest.
 type CompileResult struct {
+	ShotManifestID    string              `json:"shotManifestId"`
 	DocumentID        string              `json:"documentId"`
 	SectionID         string              `json:"sectionId"`
+	Status            string              `json:"status"`
+	ResolvedStateJSON string              `json:"resolvedStateJson"`
 	Prompt            string              `json:"prompt"`
 	ReferenceAssetIDs []string            `json:"referenceAssetIds"`
 	References        []CompiledReference `json:"references"`
@@ -145,8 +148,11 @@ func (service *Service) Compile(record Record) (CompileResult, error) {
 	}
 	assetIDs = orderedUniqueStrings(assetIDs)
 	return CompileResult{
+		ShotManifestID:    record.ID,
 		DocumentID:        record.DocumentID,
 		SectionID:         record.SectionID,
+		Status:            record.Status,
+		ResolvedStateJSON: record.ResolvedStateJSON,
 		Prompt:            strings.Join(sections, "\n"),
 		ReferenceAssetIDs: assetIDs,
 		References:        references,

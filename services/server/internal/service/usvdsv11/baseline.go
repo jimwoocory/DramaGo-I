@@ -4,9 +4,9 @@ package usvdsv11
 // Branch names are not sufficient because the V11 branch contains historical
 // V9/V10 material and generated distribution surfaces.
 type Baseline struct {
-	Branch        string
-	Commit        string
-	PluginVersion string
+	Branch        string `json:"branch"`
+	Commit        string `json:"commit"`
+	PluginVersion string `json:"pluginVersion"`
 }
 
 var CurrentBaseline = Baseline{
@@ -19,8 +19,8 @@ var CurrentBaseline = Baseline{
 // These values are intentionally descriptive: this package does not introduce
 // persistence models or repositories.
 type Ownership struct {
-	Concept string
-	Owner   string
+	Concept string `json:"concept"`
+	Owner   string `json:"owner"`
 }
 
 func OwnershipMap() []Ownership {

@@ -329,6 +329,38 @@ describe("ProjectOverview", () => {
 			if (requestUrl === "/projects/project-a/canon") {
 				return apiResponse([]);
 			}
+			if (requestUrl === "/projects/project-a/usvds-v11/gates") {
+				return apiResponse({
+					baseline: {
+						branch: "v11",
+						commit: "0c68d9cbf525eee6f2a98d3098294cdedbb29e77",
+						pluginVersion: "1.2.6",
+					},
+					gates: [
+						{ gate: "story_approved", ready: true, blockers: [] },
+						{ gate: "screenplay_reviewed", ready: true, blockers: [] },
+						{ gate: "canon_locked", ready: true, blockers: [] },
+						{ gate: "continuity_resolved", ready: true, blockers: [] },
+						{
+							gate: "storyboard_ready",
+							ready: false,
+							blockers: ["ShotManifest status must be ready"],
+						},
+						{ gate: "generation_ready", ready: false, blockers: ["compiled prompt is required"] },
+					],
+					generation: { total: 3, pending: 1, running: 0, completed: 2, failed: 0 },
+					projectId: "project-a",
+					summary: {
+						storyboardDocuments: 2,
+						canonCoreCount: 3,
+						canonApprovedCount: 3,
+						shotCount: 2,
+						readyShotCount: 1,
+						resolvedShotCount: 2,
+						compiledShotCount: 1,
+					},
+				});
+			}
 			if (requestUrl === "/projects/project-a/shot-manifests") {
 				const documentId = String(
 					(config as { params?: { documentId?: string } } | undefined)?.params?.documentId ?? "",
@@ -687,6 +719,24 @@ describe("ProjectOverview", () => {
 		await screen.findByText("文档 2 项 · 图片 1 张");
 		expect(screen.queryByText("已选生成资源")).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "角色 已选生成资源" })).not.toBeInTheDocument();
+	});
+
+	it("shows USVDS V11 gates and reviewed baseline", async () => {
+		render(
+			<SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+				<MemoryRouter initialEntries={["/projects?projectId=project-a"]}>
+					<ProjectOverview />
+				</MemoryRouter>
+			</SWRConfig>,
+		);
+
+		await screen.findByText("USVDS V11 Gate");
+		expect(screen.getByText("故事已批准")).toBeInTheDocument();
+		expect(screen.getByText("分镜可执行")).toBeInTheDocument();
+		expect(screen.getByText("可进入生成")).toBeInTheDocument();
+		expect(screen.getByText("V11 1.2.6 · 0c68d9c")).toBeInTheDocument();
+		expect(screen.getByText("4/6 通过")).toBeInTheDocument();
+		expect(screen.getByText("ShotManifest status must be ready")).toBeInTheDocument();
 	});
 
 	it("refreshes selected resource covers after an image generation task completes", async () => {
