@@ -5,17 +5,25 @@ import (
 
 	"github.com/gin-gonic/gin"
 	httpresponse "github.com/mediago-dev/mediago-drama/services/server/internal/http/response"
+	servicedocument "github.com/mediago-dev/mediago-drama/services/server/internal/service/document"
 	serviceusvdsv11 "github.com/mediago-dev/mediago-drama/services/server/internal/service/usvdsv11"
 )
 
 // USVDSV11GateStore supplies project-level V11 readiness.
 type USVDSV11GateStore interface {
 	EvaluateProject(projectID string) (serviceusvdsv11.ProjectGateReport, error)
+	ApproveGate(projectID string, gate serviceusvdsv11.GateID, documentID string, expectedVersion int) (serviceusvdsv11.GateMutationResult, error)
+	RevokeGate(projectID string, gate serviceusvdsv11.GateID, documentID string, expectedVersion int) (serviceusvdsv11.GateMutationResult, error)
 }
 
 // USVDSV11Gates handles project V11 gate routes.
 type USVDSV11Gates struct {
 	store USVDSV11GateStore
+}
+
+type mutateUSVDSV11GateRequest struct {
+	DocumentID      string `json:"documentId"`
+	ExpectedVersion int    `json:"expectedVersion"`
 }
 
 // NewUSVDSV11Gates returns a V11 gate handler.
@@ -48,4 +56,68 @@ func (handler USVDSV11Gates) HandleGet(context *gin.Context) {
 		return
 	}
 	httpresponse.OK(context, report)
+}
+
+// HandleApprove binds one human document gate to the current DramaGo document revision.
+func (handler USVDSV11Gates) HandleApprove(context *gin.Context) {
+	projectID, ok := requiredProjectID(context)
+	if !ok {
+		return
+	}
+	gate, ok := requiredPathParam(context, "gate", "gate")
+	if !ok {
+		return
+	}
+	payload, err := decodeJSON[mutateUSVDSV11GateRequest](context)
+	if err != nil {
+		httpresponse.ErrorFromStatus(context, http.StatusBadRequest, err)
+		return
+	}
+	result, err := handler.store.ApproveGate(
+		projectID,
+		serviceusvdsv11.GateID(gate),
+		payload.DocumentID,
+		payload.ExpectedVersion,
+	)
+	if err != nil {
+		status := http.StatusBadRequest
+		if servicedocument.IsWorkspaceVersionConflict(err) {
+			status = http.StatusConflict
+		}
+		httpresponse.ErrorFromStatus(context, status, err)
+		return
+	}
+	httpresponse.OK(context, result)
+}
+
+// HandleRevoke removes the current revision-bound human document gate approval.
+func (handler USVDSV11Gates) HandleRevoke(context *gin.Context) {
+	projectID, ok := requiredProjectID(context)
+	if !ok {
+		return
+	}
+	gate, ok := requiredPathParam(context, "gate", "gate")
+	if !ok {
+		return
+	}
+	payload, err := decodeJSON[mutateUSVDSV11GateRequest](context)
+	if err != nil {
+		httpresponse.ErrorFromStatus(context, http.StatusBadRequest, err)
+		return
+	}
+	result, err := handler.store.RevokeGate(
+		projectID,
+		serviceusvdsv11.GateID(gate),
+		payload.DocumentID,
+		payload.ExpectedVersion,
+	)
+	if err != nil {
+		status := http.StatusBadRequest
+		if servicedocument.IsWorkspaceVersionConflict(err) {
+			status = http.StatusConflict
+		}
+		httpresponse.ErrorFromStatus(context, status, err)
+		return
+	}
+	httpresponse.OK(context, result)
 }

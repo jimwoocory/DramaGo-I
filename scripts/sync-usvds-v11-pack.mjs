@@ -63,6 +63,15 @@ const outputCategories = {
 	"us-vertical-drama-storyboard-director": "storyboard",
 };
 
+const artifactTags = {
+	"usvd-v10-01-story-architect": "usvds:artifact:story-package",
+	"us-vertical-drama-showrunner": "usvds:artifact:story-package",
+	"usvd-v10-02-episode-architect": "usvds:artifact:episode-architecture",
+	"us-vertical-drama-episode-architect": "usvds:artifact:episode-architecture",
+	"usvd-v10-03-creator-script-draft": "usvds:artifact:screenplay",
+	"us-vertical-drama-screenwriter": "usvds:artifact:screenplay",
+};
+
 const commit = execFileSync("git", ["-C", sourceRepo, "rev-parse", "HEAD"], {
 	encoding: "utf8",
 }).trim();
@@ -188,11 +197,16 @@ for (const dirName of skillDirs) {
 		}
 	}
 
+	const artifactTagContract = artifactTags[name]
+		? `- When creating/updating this stage's authoritative artifact, preserve the document tag \`${artifactTags[name]}\` on that DramaGo Document so Gate routing can locate it deterministically.\n`
+		: "";
+
 	compiled +=
 		`\n\n---\n\n## DramaGo runtime integration contract\n\n` +
 		`- Baseline: USVDS v11@${EXPECTED_COMMIT}, plugin ${EXPECTED_VERSION}.\n` +
 		`- Write creator/development artifacts into the existing DramaGo project Documents; update the current artifact instead of inventing a parallel project store.\n` +
 		`- Use DramaGo document categories for executable artifacts: screenplay for screenplay output and storyboard for storyboard/shot output when applicable.\n` +
+		artifactTagContract +
 		`- Character/scene/prop identity and variants remain owned by DramaGo Canon/Variant; shot execution and continuity remain owned by ShotManifest/ResolvedState; generation execution remains owned by GenerationTask/Asset.\n` +
 		`- Never create shadow USVDS project, asset, shot, approval, job, or generation state.\n` +
 		`- Legacy words such as APPROVED/PASS inside this Skill are narrative/workflow guidance only and must not set DramaGo human/system Gate tags by themselves. Gate state changes require the existing DramaGo approval/user action path.\n` +

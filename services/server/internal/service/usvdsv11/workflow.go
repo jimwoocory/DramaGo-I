@@ -72,3 +72,49 @@ func WorkflowCatalog() []WorkflowDescriptor {
 		},
 	}
 }
+
+// recommendedWorkflow derives the next creative action from authoritative
+// DramaGo artifacts and revision-bound approvals. It is guidance only; it does
+// not mutate Gate state or create a second workflow state machine.
+func recommendedWorkflow(report ProjectGateReport) *WorkflowDescriptor {
+	if report.Summary.StoryDocumentID == "" {
+		return workflowByID("story")
+	}
+	if !approvalForGate(report.Approvals, GateStoryApproved).Approved {
+		return workflowByID("review")
+	}
+	if report.Summary.EpisodeArchitectureDocumentID == "" {
+		return workflowByID("episode")
+	}
+	if report.Summary.ScreenplayDocumentID == "" {
+		return workflowByID("screenplay")
+	}
+	if !approvalForGate(report.Approvals, GateScreenplayReviewed).Approved {
+		return workflowByID("review")
+	}
+	for _, gate := range report.Gates {
+		if gate.Gate == GateGenerationReady && !gate.Ready {
+			return workflowByID("storyboard")
+		}
+	}
+	return nil
+}
+
+func workflowByID(id string) *WorkflowDescriptor {
+	for _, workflow := range WorkflowCatalog() {
+		if workflow.ID == id {
+			copy := workflow
+			return &copy
+		}
+	}
+	return nil
+}
+
+func approvalForGate(approvals []ApprovalState, gate GateID) ApprovalState {
+	for _, approval := range approvals {
+		if approval.Gate == gate {
+			return approval
+		}
+	}
+	return ApprovalState{Gate: gate}
+}

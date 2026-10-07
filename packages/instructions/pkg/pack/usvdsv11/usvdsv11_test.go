@@ -50,6 +50,15 @@ func TestSnapshotLoadsPinnedV11Skills(t *testing.T) {
 		!strings.Contains(entries["usvd-v10-controller"].Body, "Never create shadow USVDS") {
 		t.Fatal("controller is missing the DramaGo ownership contract")
 	}
+	for name, tag := range map[string]string{
+		"usvd-v10-01-story-architect":      "usvds:artifact:story-package",
+		"usvd-v10-02-episode-architect":    "usvds:artifact:episode-architecture",
+		"usvd-v10-03-creator-script-draft": "usvds:artifact:screenplay",
+	} {
+		if !strings.Contains(entries[name].Body, tag) {
+			t.Fatalf("skill %s missing authoritative artifact tag %s", name, tag)
+		}
+	}
 }
 
 func TestSourceMatchesPinnedSnapshot(t *testing.T) {

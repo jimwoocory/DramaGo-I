@@ -34,10 +34,15 @@ func (fake fakeShots) ListDocument(_ string, documentID string) ([]serviceshotma
 }
 
 func TestEvaluateProjectUsesExistingDramaGoTruth(t *testing.T) {
+	story := mediamcp.WorkspaceDocument{ID: "story-1", Title: "Story Package", Content: "story", Version: 3, Tags: []string{StoryArtifactTag}}
+	story.Tags = append(story.Tags, approvalToken(GateStoryApproved, story, story.Version))
+	screenplay := mediamcp.WorkspaceDocument{ID: "script-1", Category: "screenplay", Content: "script", Version: 5, Tags: []string{ScreenplayArtifactTag}}
+	screenplay.Tags = append(screenplay.Tags, approvalToken(GateScreenplayReviewed, screenplay, screenplay.Version))
 	service := NewProjectGateService(
 		fakeDocuments{documents: []mediamcp.WorkspaceDocument{
-			{ID: "story-1", Title: "Story Package", Tags: []string{StoryApprovedTag}},
-			{ID: "script-1", Category: "screenplay", Tags: []string{ScreenplayReviewedTag}},
+			story,
+			{ID: "episodes-1", Title: "Episode Architecture", Tags: []string{EpisodeArchitectureArtifactTag}},
+			screenplay,
 			{ID: "board-1", Category: "storyboard"},
 		}},
 		fakeCanon{assets: map[string][]servicecanon.AssetRecord{
@@ -76,6 +81,76 @@ func TestEvaluateProjectUsesExistingDramaGoTruth(t *testing.T) {
 			t.Fatalf("gate %s blocked: %v", gate.Gate, gate.Blockers)
 		}
 	}
+}
+
+func TestRecommendedWorkflowFollowsAuthoritativeArtifacts(t *testing.T) {
+	baseCanon := fakeCanon{assets: map[string][]servicecanon.AssetRecord{}}
+	baseShots := fakeShots{}
+
+	t.Run("missing story recommends story architect", func(t *testing.T) {
+		service := NewProjectGateService(fakeDocuments{}, baseCanon, baseShots)
+		report, err := service.EvaluateProject("project-1")
+		if err != nil {
+			t.Fatalf("EvaluateProject() error = %v", err)
+		}
+		if report.NextWorkflow == nil || report.NextWorkflow.ID != "story" {
+			t.Fatalf("next workflow = %+v, want story", report.NextWorkflow)
+		}
+	})
+
+	t.Run("unapproved story recommends independent review", func(t *testing.T) {
+		service := NewProjectGateService(
+			fakeDocuments{documents: []mediamcp.WorkspaceDocument{{
+				ID: "story-1", Title: "Story Package", Content: "draft", Version: 2, Tags: []string{StoryArtifactTag},
+			}}},
+			baseCanon,
+			baseShots,
+		)
+		report, err := service.EvaluateProject("project-1")
+		if err != nil {
+			t.Fatalf("EvaluateProject() error = %v", err)
+		}
+		if report.NextWorkflow == nil || report.NextWorkflow.ID != "review" {
+			t.Fatalf("next workflow = %+v, want review", report.NextWorkflow)
+		}
+	})
+
+	t.Run("approved story without episode architecture recommends episode architect", func(t *testing.T) {
+		story := mediamcp.WorkspaceDocument{
+			ID: "story-1", Title: "Story Package", Content: "approved", Version: 3, Tags: []string{StoryArtifactTag},
+		}
+		story.Tags = append(story.Tags, approvalToken(GateStoryApproved, story, story.Version))
+		service := NewProjectGateService(fakeDocuments{documents: []mediamcp.WorkspaceDocument{story}}, baseCanon, baseShots)
+		report, err := service.EvaluateProject("project-1")
+		if err != nil {
+			t.Fatalf("EvaluateProject() error = %v", err)
+		}
+		if report.NextWorkflow == nil || report.NextWorkflow.ID != "episode" {
+			t.Fatalf("next workflow = %+v, want episode", report.NextWorkflow)
+		}
+	})
+
+	t.Run("episode architecture without screenplay recommends screenplay", func(t *testing.T) {
+		story := mediamcp.WorkspaceDocument{
+			ID: "story-1", Title: "Story Package", Content: "approved", Version: 3, Tags: []string{StoryArtifactTag},
+		}
+		story.Tags = append(story.Tags, approvalToken(GateStoryApproved, story, story.Version))
+		service := NewProjectGateService(
+			fakeDocuments{documents: []mediamcp.WorkspaceDocument{
+				story,
+				{ID: "episodes-1", Title: "Episode Architecture", Tags: []string{EpisodeArchitectureArtifactTag}},
+			}},
+			baseCanon,
+			baseShots,
+		)
+		report, err := service.EvaluateProject("project-1")
+		if err != nil {
+			t.Fatalf("EvaluateProject() error = %v", err)
+		}
+		if report.NextWorkflow == nil || report.NextWorkflow.ID != "screenplay" {
+			t.Fatalf("next workflow = %+v, want screenplay", report.NextWorkflow)
+		}
+	})
 }
 
 func TestEvaluateProjectBlocksWhenExistingStateIsIncomplete(t *testing.T) {

@@ -109,8 +109,12 @@ import {
 	type ShotManifestRecord,
 } from "@/domains/workspace/api/continuity";
 import {
+	approveUSVDSV11Gate,
 	getUSVDSV11Gates,
+	revokeUSVDSV11Gate,
 	usvdsV11GateKey,
+	type USVDSV11ApprovalState,
+	type USVDSV11GateId,
 	type USVDSV11GateReport,
 	type USVDSV11Workflow,
 } from "@/domains/workspace/api/usvds-v11";
@@ -181,6 +185,8 @@ export const ProjectOverview: React.FC = () => {
 	const clearStatus = useMediaGenerationStore((state) => state.clearStatus);
 	const clearStatuses = useMediaGenerationStore((state) => state.clearStatuses);
 	const [storyboardVideoDocumentId, setStoryboardVideoDocumentId] = useState<string | null>(null);
+	const [pendingUSVDSV11ApprovalGate, setPendingUSVDSV11ApprovalGate] =
+		useState<USVDSV11GateId | null>(null);
 	const refreshedSelectedAssetTaskKeysRef = useRef<Set<string>>(new Set());
 	const continuitySyncedProjectRef = useRef("");
 	const hydrateWorkspaceDocuments = useDocumentsStore((state) => state.hydrateWorkspaceDocuments);
@@ -222,6 +228,7 @@ export const ProjectOverview: React.FC = () => {
 		data: usvdsV11GateReport,
 		error: usvdsV11GateError,
 		isLoading: isUSVDSV11GateLoading,
+		mutate: mutateUSVDSV11GateReport,
 	} = useSWR(projectId ? usvdsV11GateKey(projectId) : null, () =>
 		getUSVDSV11Gates(projectId ?? ""),
 	);
@@ -269,7 +276,7 @@ export const ProjectOverview: React.FC = () => {
 			: null,
 		() => getProjectShotManifests(projectId ?? "", storyboardDocumentIds),
 	);
-	const { data: workspaceDocuments } = useSWR(
+	const { data: workspaceDocuments, mutate: mutateWorkspaceDocuments } = useSWR(
 		projectId ? workspaceDocumentsKey(projectId) : null,
 		() => getWorkspaceDocuments(projectId ?? ""),
 	);
@@ -296,6 +303,7 @@ export const ProjectOverview: React.FC = () => {
 		setMediaGenerationRequest(null);
 		clearStatuses();
 		setStoryboardVideoDocumentId(null);
+		setPendingUSVDSV11ApprovalGate(null);
 		refreshedSelectedAssetTaskKeysRef.current.clear();
 		continuitySyncedProjectRef.current = "";
 	}, [projectId]);
@@ -617,13 +625,25 @@ export const ProjectOverview: React.FC = () => {
 	);
 	const openUSVDSV11Workflow = useCallback(
 		(workflow: USVDSV11Workflow) => {
+			const report = usvdsV11GateReport;
+			const blocked = (report?.gates ?? [])
+				.filter((gate) => !gate.ready)
+				.map((gate) => `${gate.gate}: ${gate.blockers.join("；")}`)
+				.join(" | ");
+			const context = [
+				`projectId=${projectId ?? ""}`,
+				`storyDocumentId=${report?.summary.storyDocumentId ?? ""}`,
+				`episodeArchitectureDocumentId=${report?.summary.episodeArchitectureDocumentId ?? ""}`,
+				`screenplayDocumentId=${report?.summary.screenplayDocumentId ?? ""}`,
+				blocked ? `blockedGates=${blocked}` : "blockedGates=none",
+			].join("\n");
 			useAgentStore.getState().seedComposer({
 				focus: true,
 				skill: {
 					name: workflow.skill,
 					title: `USVDS V11 · ${workflow.label}`,
 				},
-				text: "请基于当前 DramaGo 项目和现有文档执行这个阶段。先检查当前 USVDS V11 Gate；产物必须继续写入或更新现有 DramaGo Documents，并由 Canon、ShotManifest、GenerationTask 承载结构化执行真相。不要创建第二套项目、资产、镜头、审批或生成状态。",
+				text: `请基于当前 DramaGo 项目和现有文档执行这个阶段。先检查当前 USVDS V11 Gate；产物必须继续写入或更新现有 DramaGo Documents，并由 Canon、ShotManifest、GenerationTask 承载结构化执行真相。不要创建第二套项目、资产、镜头、审批或生成状态。\n\n当前项目上下文：\n${context}`,
 			});
 			useAgentLayoutStore.getState().setTab("agent");
 			navigate(`${location.pathname}${location.search}${location.hash}`, {
@@ -631,7 +651,55 @@ export const ProjectOverview: React.FC = () => {
 				state: agentProjectRouteState("agent"),
 			});
 		},
-		[location.hash, location.pathname, location.search, navigate],
+		[location.hash, location.pathname, location.search, navigate, projectId, usvdsV11GateReport],
+	);
+
+	const mutateUSVDSV11Approval = useCallback(
+		async (approval: USVDSV11ApprovalState, action: "approve" | "revoke") => {
+			if (
+				!projectId ||
+				!approval.documentId ||
+				!approval.documentVersion ||
+				pendingUSVDSV11ApprovalGate
+			) {
+				return;
+			}
+			setPendingUSVDSV11ApprovalGate(approval.gate);
+			try {
+				const result =
+					action === "approve"
+						? await approveUSVDSV11Gate(
+								projectId,
+								approval.gate,
+								approval.documentId,
+								approval.documentVersion,
+							)
+						: await revokeUSVDSV11Gate(
+								projectId,
+								approval.gate,
+								approval.documentId,
+								approval.documentVersion,
+							);
+				await mutateUSVDSV11GateReport(result.report, { revalidate: false });
+				await mutateWorkspaceDocuments();
+				toast.success(action === "approve" ? "已批准当前文档版本" : "已撤销当前版本批准", {
+					description: result.document.title,
+				});
+			} catch (error) {
+				toast.error(action === "approve" ? "批准失败" : "撤销批准失败", {
+					description: error instanceof Error ? error.message : "请刷新项目状态后重试。",
+				});
+			} finally {
+				setPendingUSVDSV11ApprovalGate(null);
+			}
+		},
+		[
+			mutateUSVDSV11GateReport,
+			mutateWorkspaceDocuments,
+			pendingUSVDSV11ApprovalGate,
+			projectId,
+			toast,
+		],
 	);
 	const closeBatchGenerationDialog = useCallback((open: boolean) => {
 		if (!open) setBatchGenerationDialog(null);
@@ -686,7 +754,9 @@ export const ProjectOverview: React.FC = () => {
 									error={usvdsV11GateError}
 									isLoading={isUSVDSV11GateLoading}
 									report={usvdsV11GateReport}
+									onApproval={mutateUSVDSV11Approval}
 									onWorkflow={openUSVDSV11Workflow}
+									pendingApprovalGate={pendingUSVDSV11ApprovalGate}
 								/>
 								<DocumentResourcesSummary
 									assets={selectedGenerationAssets}
@@ -1323,8 +1393,10 @@ const USVDSV11GateSummaryCard: React.FC<{
 	error?: unknown;
 	isLoading: boolean;
 	report?: USVDSV11GateReport;
+	onApproval: (approval: USVDSV11ApprovalState, action: "approve" | "revoke") => void;
 	onWorkflow: (workflow: USVDSV11Workflow) => void;
-}> = ({ error, isLoading, report, onWorkflow }) => {
+	pendingApprovalGate: USVDSV11GateId | null;
+}> = ({ error, isLoading, report, onApproval, onWorkflow, pendingApprovalGate }) => {
 	const readyCount = report?.gates.filter((gate) => gate.ready).length ?? 0;
 	return (
 		<section className="bg-card">
@@ -1362,36 +1434,81 @@ const USVDSV11GateSummaryCard: React.FC<{
 			{report ? (
 				<>
 					<div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-						{report.gates.map((gate) => (
-							<div
-								key={gate.gate}
-								className="rounded-sm border border-border bg-ide-editor px-3 py-3"
-							>
-								<div className="flex items-center justify-between gap-2">
-									<span className="text-sm font-medium text-foreground">
-										{usvdsV11GateLabels[gate.gate]}
-									</span>
-									<Badge variant={gate.ready ? "secondary" : "outline"}>
-										{gate.ready ? (
-											<>
-												<Check className="size-3" />
-												通过
-											</>
-										) : (
-											<>
-												<X className="size-3" />
-												阻断
-											</>
-										)}
-									</Badge>
+						{report.gates.map((gate) => {
+							const approval = report.approvals.find((item) => item.gate === gate.gate);
+							const canMutateApproval = Boolean(
+								approval?.documentId &&
+								approval.documentVersion &&
+								(gate.gate === "story_approved" || gate.gate === "screenplay_reviewed"),
+							);
+							return (
+								<div
+									key={gate.gate}
+									className="rounded-sm border border-border bg-ide-editor px-3 py-3"
+								>
+									<div className="flex items-center justify-between gap-2">
+										<span className="text-sm font-medium text-foreground">
+											{usvdsV11GateLabels[gate.gate]}
+										</span>
+										<Badge variant={gate.ready ? "secondary" : "outline"}>
+											{gate.ready ? (
+												<>
+													<Check className="size-3" />
+													通过
+												</>
+											) : (
+												<>
+													<X className="size-3" />
+													阻断
+												</>
+											)}
+										</Badge>
+									</div>
+									{!gate.ready && gate.blockers.length > 0 ? (
+										<p className="mt-2 line-clamp-2 text-xs text-muted-foreground">
+											{gate.blockers.join("；")}
+										</p>
+									) : null}
+									{canMutateApproval && approval ? (
+										<div className="mt-3 flex items-center justify-between gap-2 border-t border-border pt-2">
+											<div className="min-w-0 text-[11px] text-muted-foreground">
+												<p className="truncate">{approval.documentTitle || approval.documentId}</p>
+												<p>
+													v{approval.documentVersion}
+													{approval.stale
+														? " · 批准已过期"
+														: approval.approved
+															? " · 当前版本已批准"
+															: " · 等待人工批准"}
+												</p>
+											</div>
+											<Button
+												type="button"
+												size="sm"
+												variant={approval.approved ? "outline" : "secondary"}
+												disabled={pendingApprovalGate !== null}
+												onClick={() =>
+													onApproval(approval, approval.approved ? "revoke" : "approve")
+												}
+											>
+												{pendingApprovalGate === gate.gate ? (
+													<>
+														<Loader2 className="size-3 animate-spin" />
+														处理中
+													</>
+												) : approval.approved ? (
+													"撤销批准"
+												) : approval.stale ? (
+													"重新批准"
+												) : (
+													"批准当前版本"
+												)}
+											</Button>
+										</div>
+									) : null}
 								</div>
-								{!gate.ready && gate.blockers.length > 0 ? (
-									<p className="mt-2 line-clamp-2 text-xs text-muted-foreground">
-										{gate.blockers.join("；")}
-									</p>
-								) : null}
-							</div>
-						))}
+							);
+						})}
 					</div>
 					{report.workflows.length > 0 ? (
 						<div className="mt-3 border-t border-border pt-3">
@@ -1401,6 +1518,11 @@ const USVDSV11GateSummaryCard: React.FC<{
 									<p className="mt-0.5 text-xs text-muted-foreground">
 										点击后切到 DramaGo Agent，并直接装载对应 V11 Skill。
 									</p>
+									{report.nextWorkflow ? (
+										<p className="mt-1 text-xs font-medium text-foreground">
+											推荐下一步：{report.nextWorkflow.label}
+										</p>
+									) : null}
 								</div>
 							</div>
 							<div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
@@ -1408,7 +1530,7 @@ const USVDSV11GateSummaryCard: React.FC<{
 									<Button
 										key={workflow.id}
 										type="button"
-										variant="outline"
+										variant={report.nextWorkflow?.id === workflow.id ? "default" : "outline"}
 										className="h-auto min-h-14 items-start justify-start whitespace-normal px-3 py-2 text-left"
 										onClick={() => onWorkflow(workflow)}
 									>
