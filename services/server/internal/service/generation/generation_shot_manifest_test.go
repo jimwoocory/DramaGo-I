@@ -24,8 +24,11 @@ func (fake *fakeShotManifestCompiler) CompileAndPersist(projectID string, id str
 
 func TestApplyShotManifestCompilationOverridesFreeFormInputs(t *testing.T) {
 	compiler := &fakeShotManifestCompiler{result: shotmanifest.CompileResult{
+		ShotManifestID:    "shot-7",
 		DocumentID:        "storyboard-ep1",
 		SectionID:         "section-shot-7",
+		Status:            shotmanifest.StatusReady,
+		ResolvedStateJSON: "{}",
 		Prompt:            "compiled canonical prompt",
 		ReferenceAssetIDs: []string{"asset-char", "asset-scene"},
 		References: []shotmanifest.CompiledReference{
@@ -99,6 +102,22 @@ func TestApplyShotManifestCompilationFailsClosed(t *testing.T) {
 		status, err := workflow.applyShotManifestCompilation(&payload)
 		if status != http.StatusBadRequest || err == nil {
 			t.Fatalf("status=%d error=%v, want bad request", status, err)
+		}
+	})
+
+	t.Run("V11 gate blocks draft shot", func(t *testing.T) {
+		workflow := &GenerationService{shotManifestCompiler: &fakeShotManifestCompiler{result: shotmanifest.CompileResult{
+			ShotManifestID:    "shot-draft",
+			DocumentID:        "storyboard-ep1",
+			SectionID:         "section-shot-draft",
+			Status:            shotmanifest.StatusDraft,
+			ResolvedStateJSON: "{}",
+			Prompt:            "compiled but not approved",
+		}}}
+		payload := generationMessageRequest{ProjectID: "project-a", ShotManifestID: "shot-draft"}
+		status, err := workflow.applyShotManifestCompilation(&payload)
+		if status != http.StatusConflict || err == nil {
+			t.Fatalf("status=%d error=%v, want V11 gate conflict", status, err)
 		}
 	})
 }

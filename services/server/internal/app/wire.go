@@ -44,6 +44,7 @@ import (
 	serviceshotmanifest "github.com/mediago-dev/mediago-drama/services/server/internal/service/shotmanifest"
 	serviceskill "github.com/mediago-dev/mediago-drama/services/server/internal/service/skill"
 	servicetextcompletion "github.com/mediago-dev/mediago-drama/services/server/internal/service/textcompletion"
+	serviceusvdsv11 "github.com/mediago-dev/mediago-drama/services/server/internal/service/usvdsv11"
 	serviceworkspaceevent "github.com/mediago-dev/mediago-drama/services/server/internal/service/workspaceevent"
 )
 
@@ -310,6 +311,35 @@ func newAPIHandler(config Config) *apiHandler {
 	shotManifestService.SetDocumentResourceProvider(workspaceState.StateService().Documents)
 	shotManifestService.SetContinuityAssetProvider(generationTasks)
 	generationService.SetShotManifestCompiler(shotManifestService)
+	usvdsV11Service := serviceusvdsv11.NewProjectGateService(
+		workspaceState.StateService().Documents,
+		canonService,
+		shotManifestService,
+	)
+	usvdsV11Service.SetGenerationStateResolver(func(projectID string) (serviceusvdsv11.GenerationProjectState, error) {
+		tasks, err := generationTasks.ListByProject("", projectID)
+		if err != nil {
+			return serviceusvdsv11.GenerationProjectState{}, err
+		}
+		state := serviceusvdsv11.GenerationProjectState{Total: len(tasks)}
+		for index, task := range tasks {
+			if index == 0 {
+				state.LastTaskID = task.ID
+				state.LastUpdatedAt = task.UpdatedAt
+			}
+			switch strings.ToLower(strings.TrimSpace(task.Status)) {
+			case "completed", "succeeded":
+				state.Completed++
+			case "failed", "error", "cancelled", "canceled":
+				state.Failed++
+			case "pending", "queued", "submitted", "waiting":
+				state.Pending++
+			default:
+				state.Running++
+			}
+		}
+		return state, nil
+	})
 	selectionService := serviceselection.NewService(workspaceRepos.Selections, workspaceReposErr)
 	events := appevents.NewBroker(workspaceState.AppendAgentEvent)
 	workspaceEvents := serviceworkspaceevent.NewBroker()
@@ -341,6 +371,7 @@ func newAPIHandler(config Config) *apiHandler {
 		billing:            billingService,
 		canon:              canonService,
 		shotManifests:      shotManifestService,
+		usvdsV11:           usvdsV11Service,
 		backendService:     backendService,
 		generation:         generationService,
 		selection:          selectionService,

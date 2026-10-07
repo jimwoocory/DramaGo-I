@@ -169,6 +169,7 @@ func NewHandlerWithConfig(staticFS fs.FS, config Config) http.Handler {
 	workspaceHandler := httphandlers.NewWorkspace(api.workspaceState, repository.IsRecordNotFound, servicedocument.IsWorkspaceVersionConflict, api.projectAssets)
 	canonHandler := httphandlers.NewCanon(api.canon, repository.IsRecordNotFound)
 	shotManifestHandler := httphandlers.NewShotManifests(api.shotManifests)
+	usvdsV11GateHandler := httphandlers.NewUSVDSV11Gates(api.usvdsV11)
 	episodePreviewHandler := httphandlers.NewEpisodePreview(api.workspaceState, api.mediaAssets, api.previewStreamer)
 	jianyingDraftHandler := httphandlers.NewJianyingDraft(api.jianyingDraft)
 	workspaceEventHandler := httphandlers.NewWorkspaceEvents(api)
@@ -238,6 +239,7 @@ func NewHandlerWithConfig(staticFS fs.FS, config Config) http.Handler {
 		Workspace:             workspaceHandler,
 		Canon:                 canonHandler,
 		ShotManifests:         shotManifestHandler,
+		USVDSV11Gates:         usvdsV11GateHandler,
 		EpisodePreview:        episodePreviewHandler,
 		JianyingDraft:         jianyingDraftHandler,
 		WorkspaceEvents:       workspaceEventHandler,

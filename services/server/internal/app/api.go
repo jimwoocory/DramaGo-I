@@ -28,6 +28,7 @@ import (
 	serviceshared "github.com/mediago-dev/mediago-drama/services/server/internal/service/shared"
 	serviceshotmanifest "github.com/mediago-dev/mediago-drama/services/server/internal/service/shotmanifest"
 	serviceskill "github.com/mediago-dev/mediago-drama/services/server/internal/service/skill"
+	serviceusvdsv11 "github.com/mediago-dev/mediago-drama/services/server/internal/service/usvdsv11"
 	serviceworkspaceevent "github.com/mediago-dev/mediago-drama/services/server/internal/service/workspaceevent"
 )
 
@@ -49,6 +50,7 @@ type apiHandler struct {
 	billing            *servicebilling.Service
 	canon              *servicecanon.Service
 	shotManifests      *serviceshotmanifest.Service
+	usvdsV11           *serviceusvdsv11.ProjectGateService
 	generation         *servicegeneration.GenerationService
 	selection          *serviceselection.Service
 	jianyingDraft      *servicejianyingdraft.Service

@@ -24,6 +24,7 @@ type Handlers struct {
 	Workspace             httphandlers.Workspace
 	Canon                 httphandlers.Canon
 	ShotManifests         httphandlers.ShotManifests
+	USVDSV11Gates         httphandlers.USVDSV11Gates
 	EpisodePreview        httphandlers.EpisodePreview
 	JianyingDraft         httphandlers.JianyingDraft
 	WorkspaceEvents       httphandlers.WorkspaceEvents
@@ -316,6 +317,7 @@ func registerProjectRoutes(projectRoutes *gin.RouterGroup, handlers Handlers) {
 	projectRoutes.POST("/shot-manifests/sync", handlers.ShotManifests.HandleSync)
 	projectRoutes.PUT("/shot-manifests", handlers.ShotManifests.HandleUpsert)
 	projectRoutes.POST("/shot-manifests/:shotId/compile", handlers.ShotManifests.HandleCompile)
+	projectRoutes.GET("/usvds-v11/gates", handlers.USVDSV11Gates.HandleGet)
 	registerWorkspaceRoutes(projectRoutes, handlers)
 	registerAgentRoutes(projectRoutes, handlers)
 	registerProjectGenerationNotificationRoutes(projectRoutes, handlers.GenerationTasks)

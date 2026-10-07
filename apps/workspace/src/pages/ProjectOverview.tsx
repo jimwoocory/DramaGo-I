@@ -107,6 +107,11 @@ import {
 	type CanonAssetRecord,
 	type ShotManifestRecord,
 } from "@/domains/workspace/api/continuity";
+import {
+	getUSVDSV11Gates,
+	usvdsV11GateKey,
+	type USVDSV11GateReport,
+} from "@/domains/workspace/api/usvds-v11";
 import { ProjectWorkspaceShell } from "@/domains/workspace/components/ProjectWorkspaceShell";
 import { getRouteProjectId, type AgentResourceType } from "@/domains/workspace/lib/workbench-route";
 import { useProjectStore } from "@/domains/projects/stores";
@@ -204,6 +209,13 @@ export const ProjectOverview: React.FC = () => {
 		isLoading: isUsageLoading,
 	} = useSWR(usageParams ? billingSummaryKey(usageParams) : null, () =>
 		getBillingSummary(usageParams ?? { groupBy: "capability" }),
+	);
+	const {
+		data: usvdsV11GateReport,
+		error: usvdsV11GateError,
+		isLoading: isUSVDSV11GateLoading,
+	} = useSWR(projectId ? usvdsV11GateKey(projectId) : null, () =>
+		getUSVDSV11Gates(projectId ?? ""),
 	);
 	const { assets: selectedGenerationAssets, mutate: mutateSelectedResources } =
 		useSelectedGenerationAssets(projectId);
@@ -643,6 +655,11 @@ export const ProjectOverview: React.FC = () => {
 									data={usageSummary}
 									error={usageError}
 									isLoading={isUsageLoading}
+								/>
+								<USVDSV11GateSummaryCard
+									error={usvdsV11GateError}
+									isLoading={isUSVDSV11GateLoading}
+									report={usvdsV11GateReport}
 								/>
 								<DocumentResourcesSummary
 									assets={selectedGenerationAssets}
@@ -1264,6 +1281,109 @@ const projectContinuitySummary = (
 		compiledShots: activeShots.filter((shot) => Boolean(shot.compiledPrompt?.trim())).length,
 		conflicts: activeShots.filter((shot) => shot.status === "conflict").length,
 	};
+};
+
+const usvdsV11GateLabels: Record<USVDSV11GateReport["gates"][number]["gate"], string> = {
+	story_approved: "故事已批准",
+	screenplay_reviewed: "剧本已审",
+	canon_locked: "Canon 已锁定",
+	continuity_resolved: "连续性已解析",
+	storyboard_ready: "分镜可执行",
+	generation_ready: "可进入生成",
+};
+
+const USVDSV11GateSummaryCard: React.FC<{
+	error?: unknown;
+	isLoading: boolean;
+	report?: USVDSV11GateReport;
+}> = ({ error, isLoading, report }) => {
+	const readyCount = report?.gates.filter((gate) => gate.ready).length ?? 0;
+	return (
+		<section className="bg-card">
+			<div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+				<div className="min-w-0">
+					<div className="flex items-center gap-2">
+						<GitBranch className="size-4 shrink-0 text-muted-foreground" />
+						<h2 className="text-sm font-semibold text-foreground">USVDS V11 Gate</h2>
+					</div>
+					<p className="mt-1 text-xs text-muted-foreground">
+						直接读取 DramaGo 的文档、Canon、连续性、ShotManifest 与生成任务状态。
+					</p>
+				</div>
+				<div className="flex flex-wrap items-center gap-1.5">
+					{isLoading ? (
+						<Badge variant="outline">
+							<Loader2 className="size-3 animate-spin" />
+							计算中
+						</Badge>
+					) : null}
+					{report ? (
+						<Badge variant={readyCount === report.gates.length ? "secondary" : "outline"}>
+							{readyCount}/{report.gates.length} 通过
+						</Badge>
+					) : null}
+				</div>
+			</div>
+
+			{error ? (
+				<div className="mt-3 rounded-sm border border-error-border bg-error-surface px-3 py-2 text-xs text-error-foreground">
+					USVDS V11 Gate 状态加载失败。
+				</div>
+			) : null}
+
+			{report ? (
+				<>
+					<div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+						{report.gates.map((gate) => (
+							<div
+								key={gate.gate}
+								className="rounded-sm border border-border bg-ide-editor px-3 py-3"
+							>
+								<div className="flex items-center justify-between gap-2">
+									<span className="text-sm font-medium text-foreground">
+										{usvdsV11GateLabels[gate.gate]}
+									</span>
+									<Badge variant={gate.ready ? "secondary" : "outline"}>
+										{gate.ready ? (
+											<>
+												<Check className="size-3" />
+												通过
+											</>
+										) : (
+											<>
+												<X className="size-3" />
+												阻断
+											</>
+										)}
+									</Badge>
+								</div>
+								{!gate.ready && gate.blockers.length > 0 ? (
+									<p className="mt-2 line-clamp-2 text-xs text-muted-foreground">
+										{gate.blockers.join("；")}
+									</p>
+								) : null}
+							</div>
+						))}
+					</div>
+					<div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 border-t border-border pt-2 text-xs text-muted-foreground">
+						<span>
+							V11 {report.baseline.pluginVersion} · {report.baseline.commit.slice(0, 7)}
+						</span>
+						<span>
+							Canon {report.summary.canonApprovedCount}/{report.summary.canonCoreCount}
+						</span>
+						<span>
+							Shot {report.summary.readyShotCount}/{report.summary.shotCount}
+						</span>
+						<span>已编译 {report.summary.compiledShotCount}</span>
+						<span>
+							生成任务 {report.generation.completed}/{report.generation.total} 完成
+						</span>
+					</div>
+				</>
+			) : null}
+		</section>
+	);
 };
 
 const ProjectContinuitySummary: React.FC<{ summary: ProjectContinuitySummaryValue }> = ({
