@@ -11,6 +11,7 @@ import (
 	"github.com/glebarez/sqlite"
 	instructionpack "github.com/mediago-dev/mediago-drama/packages/instructions/pkg/pack"
 	"github.com/mediago-dev/mediago-drama/packages/instructions/pkg/pack/codec"
+	instructionusvdsv11 "github.com/mediago-dev/mediago-drama/packages/instructions/pkg/pack/usvdsv11"
 	"github.com/mediago-dev/mediago-drama/services/server/internal/domain"
 	"github.com/mediago-dev/mediago-drama/services/server/internal/repository"
 	"gorm.io/gorm"
@@ -187,8 +188,8 @@ func TestServiceSeedsBuiltinPackIdempotently(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListEntries() second error = %v", err)
 	}
-	if len(first) != 9 || len(second) != len(first) {
-		t.Fatalf("skill counts first=%d second=%d, want 9 visible skills and idempotent", len(first), len(second))
+	if len(first) != 23 || len(second) != len(first) {
+		t.Fatalf("skill counts first=%d second=%d, want 23 visible skills (9 default + 14 USVDS V11) and idempotent", len(first), len(second))
 	}
 	if _, ok := findEntry(first, "auto-mention-resolver"); !ok {
 		t.Fatalf("entries = %#v, want auto-mention-resolver", first)
@@ -202,8 +203,25 @@ func TestServiceSeedsBuiltinPackIdempotently(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListPacks() error = %v", err)
 	}
-	if len(packs) != 1 || packs[0].ID != DefaultPackID || packs[0].Source != packSourceDefault {
-		t.Fatalf("packs = %#v, want default pack", packs)
+	if len(packs) != 2 {
+		t.Fatalf("packs = %#v, want default and USVDS V11 packs", packs)
+	}
+	packByID := map[string]Pack{}
+	for _, pack := range packs {
+		packByID[pack.ID] = pack
+	}
+	if packByID[DefaultPackID].Source != packSourceDefault || packByID[instructionusvdsv11.PackID].Source != packSourceDefault {
+		t.Fatalf("packs = %#v, want both shipped packs to be read-only defaults", packs)
+	}
+	controller, ok := findEntry(first, "usvd-v10-controller")
+	if !ok {
+		t.Fatalf("entries = %#v, want USVDS V11 controller", first)
+	}
+	if controller.PackID != instructionusvdsv11.PackID || controller.Source != entrySourcePack {
+		t.Fatalf("controller = %#v, want pack-backed V11 skill", controller)
+	}
+	if !strings.Contains(controller.Body, "DramaGo runtime integration contract") || !strings.Contains(controller.Body, "Never create shadow USVDS") {
+		t.Fatalf("controller body missing DramaGo ownership contract")
 	}
 }
 
@@ -228,8 +246,11 @@ func TestServiceCanDisableDefaultPack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListEntries() error = %v", err)
 	}
-	if len(after) != 0 {
-		t.Fatalf("entries after disabling default = %d, want none", len(after))
+	if len(after) != 14 {
+		t.Fatalf("entries after disabling default = %d, want 14 USVDS V11 skills to remain", len(after))
+	}
+	if _, ok := findEntry(after, "usvd-v10-controller"); !ok {
+		t.Fatalf("entries after disabling default = %#v, want USVDS V11 controller", after)
 	}
 	if err := store.Uninstall(ctx, DefaultPackID); !errors.Is(err, ErrPackReadonly) {
 		t.Fatalf("Uninstall(default) error = %v, want ErrPackReadonly", err)

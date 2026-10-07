@@ -153,6 +153,10 @@ export interface AgentRuntimeStatus {
 export interface AgentComposerSeed {
 	focus?: boolean;
 	reference?: AgentReference;
+	skill?: {
+		name: string;
+		title?: string;
+	};
 	text?: string;
 }
 

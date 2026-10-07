@@ -21,6 +21,7 @@ import (
 	instructionpack "github.com/mediago-dev/mediago-drama/packages/instructions/pkg/pack"
 	instructionbuiltin "github.com/mediago-dev/mediago-drama/packages/instructions/pkg/pack/builtin"
 	"github.com/mediago-dev/mediago-drama/packages/instructions/pkg/pack/codec"
+	instructionusvdsv11 "github.com/mediago-dev/mediago-drama/packages/instructions/pkg/pack/usvdsv11"
 	"github.com/mediago-dev/mediago-drama/services/server/internal/domain"
 	"github.com/mediago-dev/mediago-drama/services/server/internal/repository"
 )
@@ -2049,6 +2050,9 @@ func (store *Service) ensureSeeded(ctx context.Context) error {
 		if err := transactional.seedBuiltinPack(ctx); err != nil {
 			return err
 		}
+		if err := transactional.seedUSVDSV11Pack(ctx); err != nil {
+			return err
+		}
 		if err := transactional.migrateCopiedEntriesToLinks(); err != nil {
 			return err
 		}
@@ -2234,6 +2238,42 @@ func (store *Service) seedBuiltinPack(ctx context.Context) error {
 	return nil
 }
 
+func (store *Service) seedUSVDSV11Pack(ctx context.Context) error {
+	bundle, err := instructionusvdsv11.Snapshot(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err := store.upsertPackFromBundle(bundle, packSourceDefault, "embedded:usvds-v11"); err != nil {
+		return err
+	}
+	for _, category := range bundle.Categories {
+		model := domain.PackCategoryModel{
+			PackID:  bundle.Manifest.ID,
+			ID:      category.ID,
+			Label:   category.Label,
+			Order:   category.Order,
+			Source:  entrySourcePack,
+			Builtin: true,
+		}
+		if err := store.repo.UpsertCategory(model); err != nil {
+			return err
+		}
+	}
+	for _, entry := range bundle.Entries {
+		current, err := store.repo.GetEntry(entry.ID)
+		if err != nil && !repository.IsRecordNotFound(err) {
+			return err
+		}
+		if err == nil && current.Source == entrySourceUser {
+			continue
+		}
+		if err := store.repo.UpsertEntry(entryModelFromPackEntry(entry, entrySourcePack)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (store *Service) installBundle(ctx context.Context, bundle instructionpack.Bundle, source string, origin string) error {
 	return store.installBundleWithProvenance(ctx, bundle, source, origin, InstallProvenance{})
 }
@@ -2307,7 +2347,14 @@ func (store *Service) upsertPackFromBundle(bundle instructionpack.Bundle, source
 func (store *Service) bundleForInstalledPack(ctx context.Context, pack domain.PackModel) (instructionpack.Bundle, error) {
 	switch normalizePackSource(pack.Source, pack.ID) {
 	case packSourceDefault:
-		return instructionbuiltin.Builtin(ctx)
+		switch strings.TrimSpace(pack.ID) {
+		case DefaultPackID:
+			return instructionbuiltin.Builtin(ctx)
+		case instructionusvdsv11.PackID:
+			return instructionusvdsv11.Snapshot(ctx)
+		default:
+			return instructionpack.Bundle{}, fmt.Errorf("%w: unknown default pack %s", ErrInvalidPack, pack.ID)
+		}
 	case packSourceImported:
 		origin := strings.TrimSpace(pack.Origin)
 		if origin == "" {

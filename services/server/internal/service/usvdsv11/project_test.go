@@ -68,6 +68,9 @@ func TestEvaluateProjectUsesExistingDramaGoTruth(t *testing.T) {
 	if report.Summary.CanonCoreCount != 3 || report.Summary.ReadyShotCount != 1 || report.Generation.Completed != 1 {
 		t.Fatalf("summary = %+v generation = %+v", report.Summary, report.Generation)
 	}
+	if len(report.Workflows) != 8 || report.Workflows[0].Skill != "usvd-v10-controller" || report.Workflows[7].Skill != "us-vertical-drama-storyboard-director" {
+		t.Fatalf("workflows = %+v", report.Workflows)
+	}
 	for _, gate := range report.Gates {
 		if !gate.Ready {
 			t.Fatalf("gate %s blocked: %v", gate.Gate, gate.Blockers)
