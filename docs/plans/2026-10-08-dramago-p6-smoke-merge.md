@@ -62,6 +62,8 @@ Strict production-evidence blockers:
 - `no ShotManifest records`
 - `no shot passed generation preflight`
 
+**Repeated strict execution (2026-10-08):** the compiled Smoke binary was run against the real portable workspace with both `-require-production-evidence` and `-require-generation-ready`. It exited with code `2`, as designed for incomplete production evidence. The original workspace database and the project's manifest/README had matching SHA-256 hashes before and after execution (`0` changed files). The temporary snapshot was removed, and no Provider was called.
+
 **Conclusion:** the real workspace access/isolation/empty-state workflow tests passed. A populated Story → approval → Episode → Screenplay → review → Storyboard → ShotManifest → generation-preflight run has **not** been verified using this project's real content.
 
 ## Smoke runner usage
