@@ -31,6 +31,7 @@ type options struct {
 	requireGenerationReady    bool
 	requireProductionEvidence bool
 	jsonOutput                bool
+	overlayScreenplay         string
 }
 
 type projectSummary struct {
@@ -58,6 +59,7 @@ type smokeReport struct {
 	ProductionEvidenceReady    bool                                   `json:"productionEvidenceReady"`
 	ProductionEvidenceBlockers []string                               `json:"productionEvidenceBlockers"`
 	OriginalWorkspaceSafe      bool                                   `json:"originalWorkspaceSafe"`
+	ExternalScreenplayOverlay  *screenplayOverlayReport               `json:"externalScreenplayOverlay,omitempty"`
 }
 
 func main() {
@@ -90,6 +92,7 @@ func parseFlags() options {
 	requireGenerationReady := flag.Bool("require-generation-ready", false, "Exit 2 unless the selected project reaches generation_ready")
 	requireProductionEvidence := flag.Bool("require-production-evidence", false, "Exit 2 if documents, storyboard, shot, or successful preflight evidence is missing")
 	jsonOutput := flag.Bool("json", false, "Emit JSON")
+	overlayScreenplay := flag.String("overlay-screenplay", "", "Inject an unapproved Markdown screenplay into temporary project copy only; prevents production evidence PASS")
 	flag.Parse()
 	return options{
 		workspace:                 *workspace,
@@ -99,6 +102,7 @@ func parseFlags() options {
 		requireGenerationReady:    *requireGenerationReady,
 		requireProductionEvidence: *requireProductionEvidence,
 		jsonOutput:                *jsonOutput,
+		overlayScreenplay:         strings.TrimSpace(*overlayScreenplay),
 	}
 }
 
@@ -162,6 +166,10 @@ func run(opts options) (smokeReport, []projectSummary, error) {
 
 	snapshotProjectDir := filepath.Join(snapshotRoot, "projects", project.ID)
 	if err := copyProjectForSmoke(sourceProjectDir, snapshotProjectDir); err != nil {
+		return smokeReport{}, projects, err
+	}
+	overlay, err := copyUnapprovedScreenplayOverlay(opts.overlayScreenplay, snapshotProjectDir)
+	if err != nil {
 		return smokeReport{}, projects, err
 	}
 	if err := repos.DB.Model(&domain.WorkspaceProjectModel{}).
@@ -275,6 +283,9 @@ func run(opts options) (smokeReport, []projectSummary, error) {
 	}
 
 	evidenceBlockers := productionEvidenceBlockers(len(documentList.Documents), storyboardDocuments, shotCount, preflightPassCount)
+	if overlay != nil {
+		evidenceBlockers = append(evidenceBlockers, "external unapproved screenplay overlay is smoke input only")
+	}
 	return smokeReport{
 		SourceWorkspace:            sourceRoot,
 		SnapshotWorkspace:          snapshotRoot,
@@ -292,6 +303,7 @@ func run(opts options) (smokeReport, []projectSummary, error) {
 		ProductionEvidenceReady:    len(evidenceBlockers) == 0,
 		ProductionEvidenceBlockers: evidenceBlockers,
 		OriginalWorkspaceSafe:      true,
+		ExternalScreenplayOverlay:  overlay,
 	}, projects, nil
 }
 

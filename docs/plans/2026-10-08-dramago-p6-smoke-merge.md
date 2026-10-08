@@ -94,6 +94,42 @@ Source provenance: V10 R4 Revision02, `CREATOR_AUTHORIZED_DRAFT`, explicitly not
 
 **Outcome:** real source-backed screenplay Document ingestion and V11 rejection gates are verified; this is **not** a production-ready E2E pass. The source draft is missing independent human approval, the V11-authoritative Story Package, approved Canon, storyboard production contracts, and a ready ShotManifest. Do not auto-promote the V10 draft or generate media from it.
 
+## Reusable external screenplay overlay — P6 hardening
+
+P6 now supports a reusable **external-source, draft-only** test mode. It is designed for screenplay inputs received outside the DramaGo workspace and never imports them into the original user project.
+
+```powershell
+go run ./services/server/cmd/usvds-v11-smoke \
+  -workspace "<workspace-root>" \
+  -project "<project-id>" \
+  -overlay-screenplay "<private-unapproved-screenplay.md>" \
+  -json
+```
+
+The source must be a regular Markdown file under 2 MiB with `category: screenplay` and `usvds:artifact:screenplay` in YAML frontmatter. Approval tags are rejected, and the overlay is written exclusively into the temporary project snapshot. The report records SHA-256, byte count and `approvalProhibited=true`, **not** the screenplay text or source file path.
+
+Even if the copied workspace has other production artifacts, `productionEvidenceReady` is forced false when a user-supplied screenplay overlay is used. This prevents a draft from accidentally satisfying real-production acceptance criteria.
+
+**Verification against the user-supplied HAVEN EP01–EP03 V10 R4 Revision02:**
+
+| Check | Result |
+| --- | --- |
+| Source-extracted scene IDs | 15 unique IDs, five per episode |
+| Sum of source scene timing budgets | 425 seconds |
+| Reusable overlay smoke runner | PASS |
+| Imported screenplay Documents | 1 |
+| Recognized Document ID | `haven-ep01-ep03-revision02-smoke` |
+| Overlay source SHA-256 matched | yes |
+| Human-approved Gate count | 0 |
+| Backend nextWorkflow | `story` |
+| Generation / production evidence readiness | false / false |
+| Draft-only overlay blocker | present |
+| Original workspace file SHA-256 changes | 0 |
+| Temporary snapshot removed | yes |
+| Paid Provider submissions | 0 |
+
+No complete digest-bound `USVDS-V10-STORY-PACKAGE-HAVEN · R4` source was found in the checked available material. The user's screenplay references the R4 digest but is explicitly `CREATOR_AUTHORIZED_DRAFT`, not system-approved. Earlier Haven-related development packages are not interchangeable with that exact canonical revision. **Do not synthesize or approve canonical Story Truth from the three screenplay episodes.**
+
 ## Smoke runner usage
 
 Run from the repository root with Go 1.25 or a compatible toolchain.

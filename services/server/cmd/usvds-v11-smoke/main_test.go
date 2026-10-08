@@ -98,6 +98,74 @@ func TestSmokeRunnerUsesSnapshotWithoutMutatingSource(t *testing.T) {
 	}
 }
 
+func TestSmokeRunnerExternalScreenplayOverlayNeverGrantsApproval(t *testing.T) {
+	sourceRoot := t.TempDir()
+	projectDir := filepath.Join(t.TempDir(), "project")
+	if err := os.MkdirAll(filepath.Join(projectDir, "work"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := serviceshared.EnsureWorkspaceLayout(sourceRoot); err != nil {
+		t.Fatal(err)
+	}
+	repos, err := repository.OpenWorkspaceRepositories(serviceshared.WorkspacePathsFor(sourceRoot).DatabasePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repos.DB.Create(&domain.WorkspaceProjectModel{
+		ID: "project-overlay", Name: "External Screenplay Smoke", Category: "drama",
+		Status: "active", ProjectDir: projectDir, RelativeDir: "external/project-overlay",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	closeGorm(repos.DB)
+
+	overlay := filepath.Join(t.TempDir(), "screenplay.md")
+	body := "---\nid: script-external\ntitle: External draft\ncategory: screenplay\ntags:\n  - usvds:artifact:screenplay\nversion: 1\n---\n\n# External draft\n\nCreator authorized draft, NOT APPROVED.\n"
+	if err := os.WriteFile(overlay, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, _, err := run(options{workspace: sourceRoot, projectID: "project-overlay", overlayScreenplay: overlay})
+	if err != nil {
+		t.Fatalf("run overlay: %v", err)
+	}
+	if report.DocumentCount != 1 || report.Gates.Summary.ScreenplayDocumentID != "script-external" {
+		t.Fatalf("document count=%d summary=%+v", report.DocumentCount, report.Gates.Summary)
+	}
+	if report.ExternalScreenplayOverlay == nil || !report.ExternalScreenplayOverlay.ApprovalProhibited {
+		t.Fatalf("overlay provenance missing: %+v", report.ExternalScreenplayOverlay)
+	}
+	if report.GenerationReady || report.ProductionEvidenceReady || len(report.ProductionEvidenceBlockers) == 0 {
+		t.Fatalf("source-only smoke must remain blocked: %+v", report)
+	}
+	for _, state := range report.Gates.Approvals {
+		if state.Approved {
+			t.Fatalf("smoke overlay unexpectedly approved gate: %+v", state)
+		}
+	}
+	if _, err := os.Stat(report.SnapshotWorkspace); !os.IsNotExist(err) {
+		t.Fatalf("smoke snapshot not removed: %s", report.SnapshotWorkspace)
+	}
+	if entries, err := os.ReadDir(filepath.Join(projectDir, "work")); err != nil || len(entries) != 0 {
+		t.Fatalf("source project was written: entries=%v error=%v", entries, err)
+	}
+}
+
+func TestUnapprovedScreenplayOverlayRejectsSpoofedApprovalAndInvalidSource(t *testing.T) {
+	safe := "---\nid: source-one\ncategory: screenplay\ntags:\n  - usvds:artifact:screenplay\nversion: 1\n---\n\n# Draft\n"
+	if err := validateUnapprovedScreenplayOverlay([]byte(safe)); err != nil {
+		t.Fatalf("valid unapproved screenplay rejected: %v", err)
+	}
+	for _, sample := range []string{
+		strings.Replace(safe, "  - usvds:artifact:screenplay", "  - usvds:artifact:screenplay\n  - usvds:approval:screenplay_reviewed:v2:sha256:fake", 1),
+		strings.Replace(safe, "category: screenplay", "category: storyboard", 1),
+		strings.Replace(safe, "  - usvds:artifact:screenplay", "  - unrelated", 1),
+	} {
+		if err := validateUnapprovedScreenplayOverlay([]byte(sample)); err == nil {
+			t.Fatalf("unsafe overlay accepted: %q", sample)
+		}
+	}
+}
+
 func TestProductionEvidenceRequiresPopulatedShotPreflight(t *testing.T) {
 	if blockers := productionEvidenceBlockers(0, 0, 0, 0); len(blockers) != 4 {
 		t.Fatalf("empty project blockers = %v, want all 4 prerequisites", blockers)
