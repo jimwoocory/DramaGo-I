@@ -78,6 +78,9 @@ func TestSmokeRunnerUsesSnapshotWithoutMutatingSource(t *testing.T) {
 	if !report.OriginalWorkspaceSafe {
 		t.Fatal("OriginalWorkspaceSafe = false")
 	}
+	if report.ProductionEvidenceReady || len(report.ProductionEvidenceBlockers) == 0 {
+		t.Fatalf("production evidence = %v blockers = %v, want incomplete real-data fixture", report.ProductionEvidenceReady, report.ProductionEvidenceBlockers)
+	}
 	if report.Project.ID != "project-real" {
 		t.Fatalf("project = %+v", report.Project)
 	}
@@ -92,6 +95,18 @@ func TestSmokeRunnerUsesSnapshotWithoutMutatingSource(t *testing.T) {
 	}
 	if _, err := os.Stat(report.SnapshotWorkspace); !os.IsNotExist(err) {
 		t.Fatalf("temporary snapshot still exists after run: %s", report.SnapshotWorkspace)
+	}
+}
+
+func TestProductionEvidenceRequiresPopulatedShotPreflight(t *testing.T) {
+	if blockers := productionEvidenceBlockers(0, 0, 0, 0); len(blockers) != 4 {
+		t.Fatalf("empty project blockers = %v, want all 4 prerequisites", blockers)
+	}
+	if blockers := productionEvidenceBlockers(2, 0, 0, 0); len(blockers) != 3 {
+		t.Fatalf("story-only project blockers = %v, want 3 production prerequisites", blockers)
+	}
+	if blockers := productionEvidenceBlockers(3, 1, 1, 1); len(blockers) != 0 {
+		t.Fatalf("ready project blockers = %v, want none", blockers)
 	}
 }
 

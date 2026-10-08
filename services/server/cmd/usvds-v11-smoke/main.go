@@ -24,12 +24,13 @@ import (
 )
 
 type options struct {
-	workspace              string
-	projectID              string
-	listOnly               bool
-	keepSnapshot           bool
-	requireGenerationReady bool
-	jsonOutput             bool
+	workspace                 string
+	projectID                 string
+	listOnly                  bool
+	keepSnapshot              bool
+	requireGenerationReady    bool
+	requireProductionEvidence bool
+	jsonOutput                bool
 }
 
 type projectSummary struct {
@@ -41,20 +42,22 @@ type projectSummary struct {
 }
 
 type smokeReport struct {
-	SourceWorkspace       string                                 `json:"sourceWorkspace"`
-	SnapshotWorkspace     string                                 `json:"snapshotWorkspace"`
-	Project               projectSummary                         `json:"project"`
-	DocumentCount         int                                    `json:"documentCount"`
-	CanonSync             servicecanon.ProjectSyncSummary        `json:"canonSync"`
-	ShotManifestSync      serviceshotmanifest.ProjectSyncSummary `json:"shotManifestSync"`
-	Gates                 serviceusvdsv11.ProjectGateReport      `json:"gates"`
-	StoryboardDocuments   int                                    `json:"storyboardDocuments"`
-	ShotCount             int                                    `json:"shotCount"`
-	ReadyShotCount        int                                    `json:"readyShotCount"`
-	PreflightPassCount    int                                    `json:"preflightPassCount"`
-	PreflightFailures     []string                               `json:"preflightFailures"`
-	GenerationReady       bool                                   `json:"generationReady"`
-	OriginalWorkspaceSafe bool                                   `json:"originalWorkspaceSafe"`
+	SourceWorkspace            string                                 `json:"sourceWorkspace"`
+	SnapshotWorkspace          string                                 `json:"snapshotWorkspace"`
+	Project                    projectSummary                         `json:"project"`
+	DocumentCount              int                                    `json:"documentCount"`
+	CanonSync                  servicecanon.ProjectSyncSummary        `json:"canonSync"`
+	ShotManifestSync           serviceshotmanifest.ProjectSyncSummary `json:"shotManifestSync"`
+	Gates                      serviceusvdsv11.ProjectGateReport      `json:"gates"`
+	StoryboardDocuments        int                                    `json:"storyboardDocuments"`
+	ShotCount                  int                                    `json:"shotCount"`
+	ReadyShotCount             int                                    `json:"readyShotCount"`
+	PreflightPassCount         int                                    `json:"preflightPassCount"`
+	PreflightFailures          []string                               `json:"preflightFailures"`
+	GenerationReady            bool                                   `json:"generationReady"`
+	ProductionEvidenceReady    bool                                   `json:"productionEvidenceReady"`
+	ProductionEvidenceBlockers []string                               `json:"productionEvidenceBlockers"`
+	OriginalWorkspaceSafe      bool                                   `json:"originalWorkspaceSafe"`
 }
 
 func main() {
@@ -73,7 +76,8 @@ func main() {
 	} else {
 		printReport(report)
 	}
-	if opts.requireGenerationReady && !report.GenerationReady {
+	if (opts.requireGenerationReady && !report.GenerationReady) ||
+		(opts.requireProductionEvidence && !report.ProductionEvidenceReady) {
 		os.Exit(2)
 	}
 }
@@ -84,15 +88,17 @@ func parseFlags() options {
 	listOnly := flag.Bool("list", false, "List projects from a copied workspace DB and exit")
 	keepSnapshot := flag.Bool("keep-snapshot", false, "Keep the temporary smoke snapshot instead of deleting it")
 	requireGenerationReady := flag.Bool("require-generation-ready", false, "Exit 2 unless the selected project reaches generation_ready")
+	requireProductionEvidence := flag.Bool("require-production-evidence", false, "Exit 2 if documents, storyboard, shot, or successful preflight evidence is missing")
 	jsonOutput := flag.Bool("json", false, "Emit JSON")
 	flag.Parse()
 	return options{
-		workspace:              *workspace,
-		projectID:              strings.TrimSpace(*projectID),
-		listOnly:               *listOnly,
-		keepSnapshot:           *keepSnapshot,
-		requireGenerationReady: *requireGenerationReady,
-		jsonOutput:             *jsonOutput,
+		workspace:                 *workspace,
+		projectID:                 strings.TrimSpace(*projectID),
+		listOnly:                  *listOnly,
+		keepSnapshot:              *keepSnapshot,
+		requireGenerationReady:    *requireGenerationReady,
+		requireProductionEvidence: *requireProductionEvidence,
+		jsonOutput:                *jsonOutput,
 	}
 }
 
@@ -268,22 +274,45 @@ func run(opts options) (smokeReport, []projectSummary, error) {
 		}
 	}
 
+	evidenceBlockers := productionEvidenceBlockers(len(documentList.Documents), storyboardDocuments, shotCount, preflightPassCount)
 	return smokeReport{
-		SourceWorkspace:       sourceRoot,
-		SnapshotWorkspace:     snapshotRoot,
-		Project:               summarizeProject(project),
-		DocumentCount:         len(documentList.Documents),
-		CanonSync:             canonSync,
-		ShotManifestSync:      shotSync,
-		Gates:                 gateReport,
-		StoryboardDocuments:   storyboardDocuments,
-		ShotCount:             shotCount,
-		ReadyShotCount:        readyShotCount,
-		PreflightPassCount:    preflightPassCount,
-		PreflightFailures:     preflightFailures,
-		GenerationReady:       generationReady,
-		OriginalWorkspaceSafe: true,
+		SourceWorkspace:            sourceRoot,
+		SnapshotWorkspace:          snapshotRoot,
+		Project:                    summarizeProject(project),
+		DocumentCount:              len(documentList.Documents),
+		CanonSync:                  canonSync,
+		ShotManifestSync:           shotSync,
+		Gates:                      gateReport,
+		StoryboardDocuments:        storyboardDocuments,
+		ShotCount:                  shotCount,
+		ReadyShotCount:             readyShotCount,
+		PreflightPassCount:         preflightPassCount,
+		PreflightFailures:          preflightFailures,
+		GenerationReady:            generationReady,
+		ProductionEvidenceReady:    len(evidenceBlockers) == 0,
+		ProductionEvidenceBlockers: evidenceBlockers,
+		OriginalWorkspaceSafe:      true,
 	}, projects, nil
+}
+
+// productionEvidenceBlockers separates "the smoke ran" from "the project has
+// enough real artifacts to exercise the production handoff". Empty projects
+// must not be reported as production-ready just because Gate evaluation worked.
+func productionEvidenceBlockers(documents int, storyboards int, shots int, preflightPasses int) []string {
+	blockers := make([]string, 0, 4)
+	if documents == 0 {
+		blockers = append(blockers, "no project documents")
+	}
+	if storyboards == 0 {
+		blockers = append(blockers, "no storyboard documents")
+	}
+	if shots == 0 {
+		blockers = append(blockers, "no ShotManifest records")
+	}
+	if preflightPasses == 0 {
+		blockers = append(blockers, "no shot passed generation preflight")
+	}
+	return blockers
 }
 
 func copyWorkspaceDatabase(sourceRoot string, snapshotRoot string) error {
@@ -345,8 +374,14 @@ func copyTree(source string, target string) error {
 			return err
 		}
 		destination := filepath.Join(target, relative)
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("symlinks are not allowed in smoke input: %s", path)
+		}
 		if entry.IsDir() {
 			return os.MkdirAll(destination, 0o755)
+		}
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("non-regular file in smoke input: %s", path)
 		}
 		return copyFile(path, destination)
 	})
@@ -457,7 +492,7 @@ func printReport(report smokeReport) {
 		report.ReadyShotCount,
 		report.PreflightPassCount,
 	)
-	fmt.Printf("gates=%d generationReady=%v nextWorkflow=", len(report.Gates.Gates), report.GenerationReady)
+	fmt.Printf("gates=%d generationReady=%v evidenceReady=%v nextWorkflow=", len(report.Gates.Gates), report.GenerationReady, report.ProductionEvidenceReady)
 	if report.Gates.NextWorkflow == nil {
 		fmt.Println("none")
 	} else {
@@ -469,6 +504,9 @@ func printReport(report smokeReport) {
 			fmt.Printf(" blockers=%s", strings.Join(gate.Blockers, " | "))
 		}
 		fmt.Println()
+	}
+	for _, blocker := range report.ProductionEvidenceBlockers {
+		fmt.Println("production-evidence-blocker:", blocker)
 	}
 	for _, failure := range report.PreflightFailures {
 		fmt.Println("preflight-failure:", failure)

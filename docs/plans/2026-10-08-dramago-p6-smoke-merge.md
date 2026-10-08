@@ -2,148 +2,140 @@
 
 ## Status
 
-P6 is **in progress**.
+**Partially verified, not merge-ready.** The company AgentDock connector is operational again. A real project has been smoke-tested on a copied workspace, but it contains no production artifacts. Full V11 production readiness therefore remains unverified.
 
-Completed:
+### Completed
 
-- smoke runner implementation;
-- source-workspace safety regression;
-- GitHub PR #1–#6 dependency audit;
-- local fast-forward merge simulation from current `develop`;
-- integrated Go/MCP/Workspace regression on the simulated final merge.
+- Built a no-paid-provider Smoke Test CLI that isolates the original workspace.
+- Verified the temporary workspace copy and source-file safety with automated tests.
+- Executed live empty-project smoke on the company machine (2026-10-08).
+- Inspected GitHub PR #1–#6; each is open and reports mergeable.
+- Simulated all six merges against current `develop` using `git merge --ff-only`.
+- Ran Go/HTTP/MCP integration tests, Workspace 82/82 tests, and production build on the simulated final merge.
+- Added a production-evidence check so an empty project cannot pass full production acceptance.
 
-Pending:
+### Still required
 
-- execute the smoke runner against at least one **real DramaGo workspace/project** from the company AgentDock host.
+Run this smoke against a **populated** real DramaGo project containing Story/Screenplay Documents, approved Canon assets and at least one ShotManifest whose prompt passes generation preflight. A P5 synthetic E2E fixture is not a substitute for the live-data check.
 
-The current `AgentDock-Company` connector is returning an internal error, while `AgentDock-company-2` has no MediaGo Drama workspace at its default path. P6 must not substitute CIH/PVS or a synthetic fixture for the required real-project smoke.
+## Company real-project smoke — 2026-10-08
 
-## Smoke runner
+The default `%APPDATA%/mediago-drama/workspace` database was accessible but contained no registered project.
 
-Command:
+The actual portable workspace was found at:
+
+```text
+C:\Users\Administrator\Desktop\dramago-0.1.0-beta.0-win-x64\data\workspace
+```
+
+Registered project:
+
+- ID: `project-fe88dfe86e89d256`
+- Name: `测试`
+- Status: `active`
+
+**Results from the temporary workspace copy:**
+
+| Check | Result |
+| --- | --- |
+| Database snapshot opened and integrity checked | PASS |
+| Project located in actual workspace | PASS |
+| Original project write access used | No |
+| Project Documents | 0 |
+| Canon sync created / updated | 0 / 0 |
+| ShotManifest records | 0 |
+| GenerationTasks | 0 |
+| Ready ShotManifests | 0 |
+| Compiled generation preflights passed | 0 |
+| V11 Gate states | 6/6 blocked |
+| Backend recommended next workflow | `story` (故事架构) |
+| `generationReady` | false |
+| `productionEvidenceReady` | false |
+| Paid Provider submission | None |
+
+All six blocked Gates are correct for an empty project, rather than defects in the Gate evaluator. The project `work/` directory was confirmed empty. A historical log records deletion of a prior draft named `新剧本`, but that document is not present as current production content.
+
+Strict production-evidence blockers:
+
+- `no project documents`
+- `no storyboard documents`
+- `no ShotManifest records`
+- `no shot passed generation preflight`
+
+**Conclusion:** the real workspace access/isolation/empty-state workflow tests passed. A populated Story → approval → Episode → Screenplay → review → Storyboard → ShotManifest → generation-preflight run has **not** been verified using this project's real content.
+
+## Smoke runner usage
+
+Run from the repository root with Go 1.25 or a compatible toolchain.
+
+List projects from an isolated database snapshot:
 
 ```powershell
 go run ./services/server/cmd/usvds-v11-smoke -workspace "<workspace-root>" -list
 ```
 
-Run one project:
+Evaluate one project (no paid Provider call):
 
 ```powershell
-go run ./services/server/cmd/usvds-v11-smoke \
-  -workspace "<workspace-root>" \
-  -project "<project-id>" \
-  -json
+go run ./services/server/cmd/usvds-v11-smoke -workspace "<workspace-root>" -project "<project-id>" -json
 ```
 
-Require final generation readiness:
+Strict data-evidence check, which exits nonzero when required artifacts are missing:
 
 ```powershell
-go run ./services/server/cmd/usvds-v11-smoke \
-  -workspace "<workspace-root>" \
-  -project "<project-id>" \
-  -require-generation-ready
+go run ./services/server/cmd/usvds-v11-smoke -workspace "<workspace-root>" -project "<project-id>" -require-production-evidence
 ```
 
-### Safety model
+Full readiness check, which additionally requires the `generation_ready` Gate:
 
-The runner never opens the source workspace through DramaGo's migrating repository layer.
+```powershell
+go run ./services/server/cmd/usvds-v11-smoke -workspace "<workspace-root>" -project "<project-id>" -require-production-evidence -require-generation-ready
+```
 
-Instead it:
+### Isolation and safety
 
-1. resolves the source workspace;
-2. copies `app.db` plus WAL/SHM files into a temporary workspace;
-3. opens and integrity-checks only the copied DB;
-4. reads the selected project's original `project_dir` from the copied DB;
-5. copies the selected project's `work/` and lightweight project metadata into the temporary workspace;
-6. rewrites `project_dir` only inside the copied DB;
-7. performs Canon and ShotManifest synchronization only inside the copy;
-8. compiles ready ShotManifests and executes the V11 generation preflight only inside the copy;
-9. removes the temporary snapshot unless `-keep-snapshot` is explicitly requested.
+The runner copies `app.db` and any `-wal`/`-shm` companions, then integrity-checks only the copy. It reads the selected project's directory from the copied DB; copies its `work/` and lightweight metadata to a temporary workspace; rewrites `project_dir` **only in that copy**; and runs existing Document/Canon/ShotManifest synchronization, compilation and V11 Gate projection inside that workspace.
 
-A regression test verifies that the original project Markdown remains byte-identical after smoke execution.
+It rejects symlinks/non-regular work files to avoid following pointers outside the selected project. Temporary data is deleted unless `-keep-snapshot` is specified. No creative data is submitted to an external model, and no provider cost is incurred.
 
-## Smoke output
+Automated tests validate source Markdown byte preservation, proper next-workflow selection and production-evidence classification. Strict production evidence requires nonzero Document, Storyboard, ShotManifest and successful generation-preflight counts.
 
-The report includes:
+## PR stack audit
 
-- selected project;
-- document count;
-- Canon sync summary;
-- ShotManifest sync summary;
-- V11 Gate report and blockers;
-- revision approval projection;
-- backend `nextWorkflow`;
-- storyboard document count;
-- total/ready shot counts;
-- generation preflight pass/failure counts;
-- existing GenerationTask summary;
-- whether `generation_ready` is true.
+GitHub metadata observed on 2026-10-08:
 
-No paid Provider call is made.
-
-## Stacked PR audit
-
-GitHub state observed on 2026-10-08:
-
-| PR | Head | Base | GitHub mergeable |
+| PR | Branch | Base | State |
 | --- | --- | --- | --- |
-| #1 | `feature/dramago-usvds-v11-p0` | `develop` | yes |
-| #2 | `feature/dramago-usvds-v11-p1` | P0 | yes |
-| #3 | `feature/dramago-usvds-v11-p2` | P1 | yes |
-| #4 | `feature/dramago-usvds-v11-p3` | P2 | yes |
-| #5 | `feature/dramago-media-reliability-p4` | P3 | yes |
-| #6 | `feature/dramago-usvds-v11-p5-e2e` | P4 | yes |
+| #1 / P0 | `feature/dramago-usvds-v11-p0` | `develop` | open, mergeable |
+| #2 / P1 | `feature/dramago-usvds-v11-p1` | P0 | open, mergeable |
+| #3 / P2 | `feature/dramago-usvds-v11-p2` | P1 | open, mergeable |
+| #4 / P3 | `feature/dramago-usvds-v11-p3` | P2 | open, mergeable |
+| #5 / P4 | `feature/dramago-media-reliability-p4` | P3 | open, mergeable |
+| #6 / P5 | `feature/dramago-usvds-v11-p5-e2e` | P4 | open, mergeable |
 
-Current remote develop:
+Current `origin/develop` at audit time: `baceb323`.
 
-```text
-baceb323 chore: import DramaGo-I B+C baseline
-```
-
-A temporary worktree was created from that exact current `origin/develop`, then these heads were applied in order using **`git merge --ff-only`**.
-
-All six fast-forwards succeeded:
+A disposable Git worktree fast-forwarded successfully through every layer, confirming a strict ancestor chain:
 
 ```text
-develop
-  -> P0  2a523d9
-  -> P1  6345166
-  -> P2  9fa7c11
-  -> P3  d7ac0cd
-  -> P4  d6c0529
-  -> P5  8f7c11f
+develop@baceb323
+  → P0@2a523d9
+  → P1@6345166
+  → P2@9fa7c11
+  → P3@d7ac0cd
+  → P4@d6c0529
+  → P5@8f7c11f
 ```
 
-This proves the current stack is a strict ancestor chain with no hidden branch divergence.
+Tests on the fully simulated merged tree:
 
-## Integrated merge regression
+- Embedded USVDS V11 Skill Pack: PASS
+- USVDS V11 service: PASS
+- Repository / Generation / Media: PASS
+- HTTP handlers/middleware and MCP: PASS
+- Workspace targeted Agent/USVDS/Generation tests: **82/82 PASS**
+- Workspace production build: PASS
 
-Tests were executed in the temporary worktree **after the full P0→P5 merge simulation**, not merely on individual PR branches.
+The existing large-Vite-chunk warning is non-blocking.
 
-Passed:
-
-- USVDS V11 embedded pack;
-- USVDS V11 service;
-- repository;
-- generation;
-- media;
-- HTTP handlers/middleware/routes compile/tests;
-- MCP packages;
-- Workspace targeted Agent/USVDS/generation tests: **82/82**;
-- Workspace production build.
-
-The existing Vite large-chunk warning remains informational and is not introduced by the V11 stack.
-
-## Merge recommendation
-
-Do not merge out of order.
-
-Safe order:
-
-```text
-#1 -> #2 -> #3 -> #4 -> #5 -> #6
-```
-
-After each merge, GitHub will normally retarget the next stacked PR automatically or its base can be changed to `develop`. Before the final production merge, rerun P6 real-project smoke against a temporary snapshot of the company DramaGo workspace.
-
-P6 should not be marked complete until that real-project smoke is recorded.
+**Recommended merge order:** #1 → #2 → #3 → #4 → #5 → #6. Before actual production merge, obtain the populated-project smoke evidence; then confirm CI checks and merge in order. Do not label P6 fully passed solely because the code and empty-project tests pass.
