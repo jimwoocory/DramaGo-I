@@ -66,6 +66,34 @@ Strict production-evidence blockers:
 
 **Conclusion:** the real workspace access/isolation/empty-state workflow tests passed. A populated Story → approval → Episode → Screenplay → review → Storyboard → ShotManifest → generation-preflight run has **not** been verified using this project's real content.
 
+## User-supplied HAVEN screenplay overlay smoke — 2026-10-08
+
+A user-supplied DOCX, `HAVEN_EP01-EP03_Screenplay_Draft_V10_R4_Revision02.docx`, was text-extracted to a **private, temporary Markdown test input** and overlaid into the copied workspace project `project-fe88dfe86e89d256`. No source screenplay body was committed or sent to GitHub.
+
+Source provenance: V10 R4 Revision02, `CREATOR_AUTHORIZED_DRAFT`, explicitly not system-approved or production-ready. This draft is external input tested against the pinned V11 DramaGo adapter, **not** a substitute for a V11-approved Story Package or human approval.
+
+| Check | Result |
+| --- | --- |
+| Workspace snapshot + source-overlay import | PASS |
+| Existing Document sync recognizes screenplay category | PASS |
+| Existing V11 artifact tag `usvds:artifact:screenplay` recognized | PASS |
+| Scene headers / unique IDs preserved | 15 / 15 |
+| EP01 / EP02 / EP03 scene counts | 5 / 5 / 5 |
+| Summed source scene duration | 425 seconds |
+| Temporary imported Markdown matches extracted input byte-for-byte | PASS |
+| Document count in copied project | 1 |
+| Screenplay Document ID | `haven-ep01-ep03-revision02-smoke` |
+| Human screenplay approval | false (correct) |
+| Next recommended workflow | `story` (Story Architect; approved Story Package missing) |
+| Canon / ShotManifest / Generation preflight | not available from this screenplay alone |
+| `generationReady` / `productionEvidenceReady` | false / false |
+| Original workspace DB / project manifest / README hash changes | 0 |
+| Original project work-file count after smoke | 0 |
+| Temporary smoke snapshot removed | yes |
+| Paid provider calls | 0 |
+
+**Outcome:** real source-backed screenplay Document ingestion and V11 rejection gates are verified; this is **not** a production-ready E2E pass. The source draft is missing independent human approval, the V11-authoritative Story Package, approved Canon, storyboard production contracts, and a ready ShotManifest. Do not auto-promote the V10 draft or generate media from it.
+
 ## Smoke runner usage
 
 Run from the repository root with Go 1.25 or a compatible toolchain.
